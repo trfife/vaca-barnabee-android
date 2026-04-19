@@ -115,6 +115,47 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
     @Volatile private var lastPipelineSuccessAtMs: Long = 0L
     @Volatile private var lastErrorAtMs: Long = 0L
 
+    // --- Pipeline latency tracker -------------------------------------------
+    // Records monotonic timestamps at each pipeline stage so we can emit a
+    // structured "pipeline-timing" custom-event at turn completion. This is
+    // the primary tool for benchmarking optimizations.
+    private val pipelineTimes = mutableMapOf<String, Long>()
+    private fun markPipelineStage(stage: String) {
+        pipelineTimes[stage] = System.currentTimeMillis()
+    }
+    private fun resetPipelineTimes() { pipelineTimes.clear() }
+    private fun emitPipelineTiming() {
+        if (pipelineTimes.isEmpty()) return
+        try {
+            val t = pipelineTimes
+            val wakeMs = t["wake"] ?: return
+            fun delta(key: String): Long? = t[key]?.let { it - wakeMs }
+            fun span(from: String, to: String): Long? {
+                val a = t[from]; val b = t[to]
+                return if (a != null && b != null) b - a else null
+            }
+            val payload = buildJsonObject {
+                put("wake_to_transcribe_ms", delta("transcribe") ?: -1)
+                put("transcribe_to_voice_started_ms", span("transcribe", "voice-started") ?: -1)
+                put("voice_started_to_stopped_ms", span("voice-started", "voice-stopped") ?: -1)
+                put("voice_stopped_to_transcript_ms", span("voice-stopped", "transcript") ?: -1)
+                put("transcript_to_synthesize_ms", span("transcript", "synthesize") ?: -1)
+                put("synthesize_to_audio_start_ms", span("synthesize", "audio-start") ?: -1)
+                put("audio_start_to_audio_stop_ms", span("audio-start", "audio-stop") ?: -1)
+                put("wake_to_first_audio_ms", delta("audio-start") ?: -1)
+                put("wake_to_done_ms", delta("audio-stop") ?: -1)
+                put("ts", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
+            }
+            sendCustomEvent("pipeline-timing", payload)
+            log.i("Pipeline timing: wake→audio=${delta("audio-start")}ms, " +
+                    "STT=${span("voice-stopped", "transcript")}ms, " +
+                    "LLM=${span("transcript", "synthesize")}ms, " +
+                    "TTS=${span("synthesize", "audio-start")}ms")
+        } catch (ex: Exception) {
+            log.w("emitPipelineTiming failed: $ex")
+        }
+    }
+
     /** Monotonic counter for throttled periodic heartbeats off pingTimer. */
     private var pingTickCounter: Int = 0
 
@@ -305,6 +346,8 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                             else -> {
                                 if (intent.action == BroadcastSender.WAKE_WORD_DETECTED) {
                                     volumeDucking("all", true)
+                                    resetPipelineTimes()
+                                    markPipelineStage("wake")
                                     markWakeNow()
                                     setPhase(SatellitePhase.LISTENING, "wake-word")
                                     sendWakeWordDetection()
@@ -522,6 +565,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
                     "transcribe" -> {
                         // Sent when requesting voice command
+                        markPipelineStage("transcribe")
                         volumeDucking("all", true)
                         setPhase(SatellitePhase.LISTENING, "transcribe")
                         requestInputAudioStream()
@@ -530,18 +574,21 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
                     "voice-started" -> {
                         // Sent when detected voice command started
+                        markPipelineStage("voice-started")
                         setPhase(SatellitePhase.LISTENING, "voice-started")
                         setPipelineNextStageTimeout(PipelineStage.VOICE_STARTED_TO_STOPPED)
                     }
 
                     "voice-stopped" -> {
                         // Sent when detected voice command stopped
+                        markPipelineStage("voice-stopped")
                         setPhase(SatellitePhase.THINKING, "voice-stopped")
                         setPipelineNextStageTimeout(PipelineStage.VOICE_STOPPED_TO_TRANSCRIPT)
                     }
 
                     "transcript" -> {
                         // Sent when STT converted voice command to text
+                        markPipelineStage("transcript")
                         // If the pipeline was cancelled (stop-word), ignore stale transcript.
                         if (satellitePhase == SatellitePhase.IDLE) {
                             log.d("Dropping stale transcript (phase=IDLE, epoch=$eventEpoch)")
@@ -565,6 +612,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
                     "synthesize" -> {
                         // Sent when conversation engine sent response to command
+                        markPipelineStage("synthesize")
                         if (satellitePhase == SatellitePhase.IDLE) {
                             log.d("Dropping stale synthesize (phase=IDLE, epoch=$eventEpoch)")
                         } else {
@@ -593,6 +641,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
                     "audio-start" -> {
                         // Sent when audio stream about to start.
+                        markPipelineStage("audio-start")
                         // Drop if pipeline was cancelled (stop-word reset).
                         if (satellitePhase == SatellitePhase.IDLE) {
                             log.d("Dropping stale audio-start (phase=IDLE, epoch=$eventEpoch)")
@@ -616,6 +665,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
                     "audio-stop" -> {
                         // Sent when all audio chunks sent
+                        markPipelineStage("audio-stop")
                         if (pcmMediaPlayer.isPlaying) {
                             pcmMediaPlayer.stop()
                         }
@@ -624,6 +674,9 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         sendEvent(
                             "played",
                         )
+
+                        // Emit pipeline timing before marking success.
+                        emitPipelineTiming()
 
                         // Turn completed successfully — mark the timestamp
                         // before possibly queuing a follow-up turn.
