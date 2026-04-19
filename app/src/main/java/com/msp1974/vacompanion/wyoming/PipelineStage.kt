@@ -14,16 +14,6 @@ package com.msp1974.vacompanion.wyoming
  * of bugs this fork is trying to eliminate.
  */
 enum class PipelineStage(val durationMs: Long, val rationale: String) {
-    /**
-     * `run-pipeline` sent → HA responds `transcribe` (ASR stage starts).
-     *
-     * Used after a fresh wake or after the continue-conversation re-arm to
-     * bound how long we wait for HA to actually begin the new turn. Without
-     * this, a wedged HA could leave us in LISTENING (phase) with no inbound
-     * progress and no timer armed — the "double up blocking" pain point.
-     */
-    RUN_PIPELINE_TO_TRANSCRIBE(10_000L, "HA must ack run-pipeline with transcribe quickly"),
-
     /** `transcribe` sent → HA responds `voice-started` (VAD trip). */
     TRANSCRIBE_TO_VOICE_STARTED(5_000L, "VAD should fire fast once streaming starts"),
 

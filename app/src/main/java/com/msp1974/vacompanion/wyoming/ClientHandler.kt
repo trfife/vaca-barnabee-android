@@ -57,7 +57,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
     private var runClient: Boolean = true
     private var satelliteStatus: SatelliteState = SatelliteState.STOPPED
-    @Volatile private var pipelineStatus: PipelineStatus = PipelineStatus.INACTIVE
+    private var pipelineStatus: PipelineStatus = PipelineStatus.INACTIVE
     private val connectionID: String = "${client.inetAddress.hostAddress}"
 
     private var pingTimer: Timer = Timer()
@@ -95,34 +95,6 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
      * within the same pipeline turn (i.e. not cancelled by cancelPipelineNextStageTimeout).
      */
     private var hardCapRunnable: Runnable? = null
-
-    /**
-     * Serializes the wake → (optional reset) → start-pipeline sequence.
-     *
-     * The wake-word broadcast receiver spawns a fresh Thread on every wake. Two
-     * wakes close together used to both fall through to `sendStartPipeline()`,
-     * causing HA to receive two overlapping `run-pipeline` events — the
-     * "double-up blocking" bug. Holding this lock around the whole wake handler
-     * forces them to serialize and re-evaluate `pipelineStatus` under the lock.
-     *
-     * Also held by [resetPipeline] when called from the wake path so we can
-     * flip [awaitingPipelineFresh] atomically with the reset.
-     */
-    private val pipelineLock = Any()
-
-    /**
-     * When true, [handleEvent] drops stale inbound events from an aborted
-     * pipeline (voice-started/transcript/audio-start/pipeline-ended/…). Set
-     * by the wake-path reset right before we send a fresh `run-pipeline`, and
-     * cleared on the first `transcribe` event HA sends back for the new turn.
-     *
-     * Prevents the rare but very painful race where HA has already emitted
-     * events for the old pipeline before it sees our `audio-stop`; without
-     * this flag, `audio-start` from the OLD turn would play old TTS over the
-     * new user request, and `pipeline-ended` from the OLD turn would call
-     * `resetPipeline()` and wipe the NEW turn we just started.
-     */
-    @Volatile private var awaitingPipelineFresh: Boolean = false
 
     // --- Satellite phase (user-facing coarse state) --------------------------
     //
@@ -212,13 +184,10 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
     var wakeWordBroadcastReceiver: BroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (satelliteStatus == SatelliteState.RUNNING) {
-                Thread {
-                    synchronized(pipelineLock) {
+                Thread(object : Runnable {
+                    override fun run() {
                         when {
                             pcmMediaPlayer.isPlaying -> {
-                                // Barge-in: TTS playing → stop playback. No new pipeline;
-                                // treat as "shut up". If the user actually wanted to re-ask
-                                // they'll wake again after the mic comes free.
                                 sendAudioStop()
                                 pcmMediaPlayer.stop()
                                 volumeDucking("music", false)
@@ -228,47 +197,18 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                             }
                             else -> {
                                 if (intent.action == BroadcastSender.WAKE_WORD_DETECTED) {
-                                    handleWakeDetectedLocked()
+                                    volumeDucking("all", true)
+                                    markWakeNow()
+                                    setPhase(SatellitePhase.LISTENING)
+                                    sendWakeWordDetection()
+                                    sendStartPipeline()
                                 }
                             }
                         }
                     }
-                }.start()
+                }).start()
             }
         }
-    }
-
-    /**
-     * Start a new voice turn from a wake detection. Caller MUST hold [pipelineLock].
-     *
-     * Core "no more double-up" logic:
-     *  - If a prior pipeline is still in flight (mic streaming, or we're in the
-     *    THINKING/TALKING phase) we call [resetPipeline] FIRST to bump the epoch,
-     *    tear down the mic stream, tell HA to flush, and stand up a
-     *    stale-event drop guard ([awaitingPipelineFresh]).
-     *  - Then we send a fresh `run-pipeline` and arm
-     *    [PipelineStage.RUN_PIPELINE_TO_TRANSCRIBE] so a wedged HA can't leave
-     *    us stuck in LISTENING with no inbound progress.
-     */
-    private fun handleWakeDetectedLocked() {
-        val needReset = pipelineStatus != PipelineStatus.INACTIVE ||
-            satellitePhase == SatellitePhase.LISTENING ||
-            satellitePhase == SatellitePhase.THINKING ||
-            satellitePhase == SatellitePhase.TALKING
-        if (needReset) {
-            log.w("Wake while pipeline active (status=$pipelineStatus, phase=$satellitePhase) " +
-                "— resetting before starting new turn")
-            resetPipeline()
-            awaitingPipelineFresh = true
-        }
-        volumeDucking("all", true)
-        markWakeNow()
-        setPhase(SatellitePhase.LISTENING)
-        sendWakeWordDetection()
-        sendStartPipeline()
-        // Bound the `run-pipeline` → `transcribe` window. Without this, a wedged
-        // HA leaves us with no inbound progress and no armed timer.
-        setPipelineNextStageTimeout(PipelineStage.RUN_PIPELINE_TO_TRANSCRIBE)
     }
     val filter = IntentFilter().apply {
         addAction(BroadcastSender.WAKE_WORD_DETECTED)
@@ -426,30 +366,6 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
         if (event.type != "ping" && event.type != "pong" && event.type != "audio-chunk") {
             log.d("Received event - $client_id: ${event.toMap()}")
-        }
-
-        // Stale-event drop: if the wake path just aborted a prior pipeline, HA
-        // may still have in-flight events for the OLD turn (voice-started,
-        // transcript, audio-start, pipeline-ended, …). Processing those would
-        // corrupt the new turn — `audio-start` would play old TTS over the
-        // user's new request, `pipeline-ended` would resetPipeline() and wipe
-        // the new turn we just started. Drop them until HA emits `transcribe`
-        // for the new run-pipeline (the canonical "new turn begins" marker).
-        if (awaitingPipelineFresh) {
-            when (event.type) {
-                "transcribe" -> {
-                    log.d("Clearing awaitingPipelineFresh on new transcribe")
-                    awaitingPipelineFresh = false
-                    // fall through to normal handling below
-                }
-                "voice-started", "voice-stopped", "transcript", "synthesize",
-                "audio-start", "audio-chunk", "audio-stop", "played",
-                "pipeline-ended", "error" -> {
-                    log.d("Dropping stale ${event.type} from aborted pipeline")
-                    return
-                }
-                // ping/pong/describe/capabilities/etc. pass through
-            }
         }
 
         // Events not requiring running satellite
@@ -692,9 +608,6 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
         expectingTTSResponse = false
         currentStage = null
         hardCapRunnable = null
-        // Clear any prior drop-guard. If we're being called from the wake path
-        // the caller will re-set this immediately after we return.
-        awaitingPipelineFresh = false
 
         volumeDucking("all", false)
 
