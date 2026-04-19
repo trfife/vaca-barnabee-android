@@ -824,6 +824,27 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                     }
                 }
             }
+
+            "get-logs" -> {
+                try {
+                    val tree = com.msp1974.vacompanion.utils.RingLogTree.instance
+                    val payload = buildJsonObject {
+                        put("ts", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
+                        put("lines", tree?.size() ?: 0)
+                        put("encoding", "gzip+base64")
+                        put("data", tree?.snapshotGzipBase64() ?: "")
+                    }
+                    sendCustomEvent("logs-response", payload)
+                } catch (ex: Exception) {
+                    emitError(
+                        code = "logs.pull",
+                        component = "wyoming",
+                        severity = "warn",
+                        message = "get-logs action failed",
+                        cause = ex,
+                    )
+                }
+            }
         }
     }
 
