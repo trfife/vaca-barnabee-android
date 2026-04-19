@@ -16,6 +16,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import com.msp1974.vacompanion.AppExceptionHandler
 import com.msp1974.vacompanion.MainActivity
 import com.msp1974.vacompanion.R
 import com.msp1974.vacompanion.VACAApplication
@@ -74,7 +75,12 @@ class VAForegroundService : LifecycleService() {
         Timber.v("onStartCommand action: $action")
         if (intent == null) {
             Timber.v("VACA restarted by OS after crash")
-            startActivity(this)
+            if (AppExceptionHandler.isCrashLoopActive(this)) {
+                Timber.w("Not auto-launching MainActivity: crash loop active " +
+                        "(last detected ${AppExceptionHandler.crashLoopDetectedAt(this)})")
+            } else {
+                startActivity(this)
+            }
             action = Actions.START.toString()
         }
         // Do the work that the service needs to do here
@@ -171,8 +177,17 @@ class VAForegroundService : LifecycleService() {
     }
 
     private fun restartActivityWatchdog() {
+        if (!config.activityWatchdogEnabled) {
+            Timber.i("Activity watchdog disabled (config.activityWatchdogEnabled=false); " +
+                    "activity will not be auto-relaunched when user navigates away")
+            return
+        }
         watchdogTimer.schedule(object: TimerTask() {
             override fun run() {
+                if (AppExceptionHandler.isCrashLoopActive(this@VAForegroundService)) {
+                    Timber.w("Activity watchdog suppressed — crash loop active")
+                    return
+                }
                 if (VACAApplication.activityManager.activity == null) {
                     Timber.d("Watchdog detected activity not running.  Restarting...")
                     startActivity(this@VAForegroundService)

@@ -111,6 +111,17 @@ class APPConfig(val context: Context) {
         onValueChangedListener(property, oldValue, newValue)
     }
 
+    /**
+     * When true, the foreground service will forcibly re-launch [MainActivity]
+     * every 5 seconds if it isn't the current foreground activity. Upstream
+     * VACA hard-coded this on, which pulls the user back into the app any
+     * time they nav elsewhere — Barnabee defaults it OFF to respect the user.
+     * Crash-driven restarts still work via [Actions.START] on null-intent.
+     */
+    var activityWatchdogEnabled: Boolean by Delegates.observable(false) { property, oldValue, newValue ->
+        onValueChangedListener(property, oldValue, newValue)
+    }
+
     var notificationVolume: Int by Delegates.observable(DEFAULT_NOTIFICATION_VOLUME) { property, oldValue, newValue ->
         onValueChangedListener(property, oldValue, newValue)
     }
@@ -301,6 +312,9 @@ class APPConfig(val context: Context) {
         }
         if (settings.has("continue_conversation")) {
             continueConversation = settings["continue_conversation"] as Boolean
+        }
+        if (settings.has("activity_watchdog_enabled")) {
+            activityWatchdogEnabled = settings["activity_watchdog_enabled"] as Boolean
         }
         if (settings.has("notification_volume")) {
             notificationVolume = settings.getInt("notification_volume")

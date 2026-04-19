@@ -38,6 +38,7 @@ import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.Timer
 import java.util.TimerTask
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.decrementAndFetch
 import kotlin.concurrent.atomics.incrementAndFetch
@@ -67,6 +68,33 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
     private var expectingTTSResponse: Boolean = false
     private var lastResponseIsQuestion: Boolean = false
+
+    /**
+     * Monotonic pipeline epoch — increments on every [resetPipeline] entry and
+     * every [PipelineStatus.INACTIVE] → [PipelineStatus.LISTENING] transition.
+     *
+     * Stage timeouts capture the current epoch when scheduled and drop their
+     * work if the epoch changed by the time they fire. This kills a whole
+     * class of "stale timeout from a previous pipeline resets the new one"
+     * bugs.
+     *
+     * See docs/state-machine.md §2.
+     */
+    private val pipelineEpoch = AtomicLong(0L)
+
+    /**
+     * The stage currently being waited on, for logging and the 120s hard cap.
+     */
+    private var currentStage: PipelineStage? = null
+
+    /** Epoch at which [currentStage] was armed — used for hard-cap accounting. */
+    private var currentStageArmedAt: Long = 0L
+
+    /**
+     * Pending hard-cap token. Kept separate so it can survive stage changes
+     * within the same pipeline turn (i.e. not cancelled by cancelPipelineNextStageTimeout).
+     */
+    private var hardCapRunnable: Runnable? = null
 
     // Initiate wake word broadcast receiver
     var wakeWordBroadcastReceiver: BroadcastReceiver = object : BroadcastReceiver() {
@@ -216,7 +244,10 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
     private fun requestInputAudioStream() {
         if (pipelineStatus != PipelineStatus.LISTENING) {
-            log.d("Streaming audio to server for $client_id")
+            // Entering a new pipeline turn — bump epoch so any stale timeouts
+            // or late inbound events from previous turns self-drop.
+            val epoch = pipelineEpoch.incrementAndGet()
+            log.d("Streaming audio to server for $client_id (epoch $epoch)")
             pipelineStatus = PipelineStatus.LISTENING
             server.requestInputAudioStream()
         }
@@ -270,17 +301,17 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         // Sent when requesting voice command
                         volumeDucking("all", true)
                         requestInputAudioStream()
-                        setPipelineNextStageTimeout(10)
+                        setPipelineNextStageTimeout(PipelineStage.TRANSCRIBE_TO_VOICE_STARTED)
                     }
 
                     "voice-started" -> {
                         // Sent when detected voice command started
-                        setPipelineNextStageTimeout(30)
+                        setPipelineNextStageTimeout(PipelineStage.VOICE_STARTED_TO_STOPPED)
                     }
 
                     "voice-stopped" -> {
                         // Sent when detected voice command stopped
-                        setPipelineNextStageTimeout(15)
+                        setPipelineNextStageTimeout(PipelineStage.VOICE_STOPPED_TO_TRANSCRIPT)
                     }
 
                     "transcript" -> {
@@ -289,8 +320,8 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         if (event.getProp("text").lowercase().contains("never mind")) {
                             volumeDucking("all", false)
                         } else {
-                            // If no response from conversation engine in 10s, timeout
-                            setPipelineNextStageTimeout(10)
+                            // LLM/conversation engine can legitimately be slow.
+                            setPipelineNextStageTimeout(PipelineStage.TRANSCRIPT_TO_SYNTHESIZE)
                         }
                     }
 
@@ -299,7 +330,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         lastResponseIsQuestion =
                             (event.getProp("text").replace("\n", "").endsWith("?"))
                         expectingTTSResponse = true
-                        setPipelineNextStageTimeout(10)
+                        setPipelineNextStageTimeout(PipelineStage.SYNTHESIZE_TO_AUDIO_START)
                     }
 
                     "pipeline-ended" -> {
@@ -340,9 +371,15 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         )
 
                         if (config.continueConversation || lastResponseIsQuestion) {
+                            // Re-arm for the follow-up turn. Upstream bug: no timeout was
+                            // armed here, so if HA never replied to the new pipeline we
+                            // hung in LISTENING forever. That was the "stuck listening"
+                            // pain point; fix per docs/state-machine.md §3.
                             sendStartPipeline()
+                            setPipelineNextStageTimeout(PipelineStage.AUDIO_STOP_TO_NEXT_TURN)
                         } else {
-                            setPipelineNextStageTimeout(2)
+                            // Defensive teardown — no follow-up expected.
+                            setPipelineNextStageTimeout(PipelineStage.AUDIO_STOP_TO_IDLE)
                         }
 
                     }
@@ -367,26 +404,87 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
         }
     }
 
-    private fun setPipelineNextStageTimeout(duration: Int) {
+    private fun setPipelineNextStageTimeout(stage: PipelineStage) {
         cancelPipelineNextStageTimeout()
-        handler.postDelayed({
-            handlePipelineTimeout()
-        }, duration * 1000L)
+        val epoch = pipelineEpoch.get()
+        currentStage = stage
+        currentStageArmedAt = System.currentTimeMillis()
+        log.d("Arm stage timeout $stage (${stage.durationMs}ms) at epoch $epoch")
+        val runnable = Runnable {
+            if (pipelineEpoch.get() == epoch) {
+                log.d("Pipeline stage $stage timed out at epoch $epoch (${stage.rationale})")
+                handlePipelineTimeout(stage)
+            } else {
+                log.d("Dropped stale $stage timeout (armed epoch $epoch, current ${pipelineEpoch.get()})")
+            }
+        }
+        handler.postDelayed(runnable, stage.durationMs)
+
+        // Also arm the hard-cap backstop if one isn't already armed this turn.
+        if (hardCapRunnable == null) {
+            armHardCap(epoch)
+        }
+    }
+
+    /**
+     * Legacy int-second overload kept for any external callers; prefer
+     * [setPipelineNextStageTimeout]`(stage)` inside this class. Mapped to
+     * a synthetic stage so we still benefit from epoch-based stale dropping.
+     */
+    private fun setPipelineNextStageTimeout(durationSeconds: Int) {
+        val mapped = when (durationSeconds) {
+            2  -> PipelineStage.AUDIO_STOP_TO_IDLE
+            5  -> PipelineStage.TRANSCRIBE_TO_VOICE_STARTED
+            10 -> PipelineStage.SYNTHESIZE_TO_AUDIO_START
+            15 -> PipelineStage.VOICE_STOPPED_TO_TRANSCRIPT
+            30 -> PipelineStage.VOICE_STARTED_TO_STOPPED
+            else -> null
+        }
+        if (mapped != null) {
+            setPipelineNextStageTimeout(mapped)
+        } else {
+            // Fallback: schedule with raw duration but still epoch-guarded.
+            cancelPipelineNextStageTimeout()
+            val epoch = pipelineEpoch.get()
+            handler.postDelayed({
+                if (pipelineEpoch.get() == epoch) {
+                    handlePipelineTimeout(null)
+                }
+            }, durationSeconds * 1000L)
+        }
     }
 
     private fun cancelPipelineNextStageTimeout() {
         try {
             handler.removeCallbacksAndMessages(null)
         } catch (ex: Exception) {}
+        currentStage = null
+        hardCapRunnable = null
     }
 
-    private fun handlePipelineTimeout() {
-        log.d("Pipeline timed out")
+    private fun armHardCap(epoch: Long) {
+        val runnable = Runnable {
+            if (pipelineEpoch.get() == epoch) {
+                log.w("Pipeline hard cap (${PipelineStage.HARD_UPPER_BOUND.durationMs}ms) hit at epoch $epoch — force resetting")
+                handlePipelineTimeout(PipelineStage.HARD_UPPER_BOUND)
+            }
+        }
+        hardCapRunnable = runnable
+        handler.postDelayed(runnable, PipelineStage.HARD_UPPER_BOUND.durationMs)
+    }
+
+    private fun handlePipelineTimeout(stage: PipelineStage?) {
+        log.d("Pipeline timed out${stage?.let { " at stage $it" } ?: ""}")
         resetPipeline()
     }
 
     private fun resetPipeline() {
+        // Bump the epoch first so any in-flight callbacks see the new value and bail.
+        val newEpoch = pipelineEpoch.incrementAndGet()
+        log.d("resetPipeline → epoch $newEpoch")
         expectingTTSResponse = false
+        currentStage = null
+        hardCapRunnable = null
 
         volumeDucking("all", false)
 
