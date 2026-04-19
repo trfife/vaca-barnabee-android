@@ -4,6 +4,6 @@ plugins {
     alias(libs.plugins.android.library) apply false
     alias(libs.plugins.kotlin.android) apply false
     alias(libs.plugins.kotlin.compose) apply false
-    id("com.google.gms.google-services") version "4.4.3" apply false
-    id("com.google.firebase.crashlytics") version "3.0.6" apply false
+    // Firebase plugins removed (Barnabee fork). Crash reports go to local
+    // files/crashes/ and forward to HA via P4.5-h.
 }

@@ -4,16 +4,18 @@ import android.content.Context
 import android.os.Bundle
 import android.util.Log
 import androidx.core.os.bundleOf
-import com.google.firebase.Firebase
-import com.google.firebase.FirebaseApp
-import com.google.firebase.analytics.FirebaseAnalytics
-import com.google.firebase.analytics.analytics
-import com.google.firebase.crashlytics.FirebaseCrashlytics
-import com.google.firebase.crashlytics.crashlytics
 
+/**
+ * Barnabee: Firebase/Crashlytics has been stripped from this fork. This file
+ * preserves the public surface of [FirebaseManager] so upstream call sites
+ * keep working without changes, while routing everything to local-only sinks:
+ * - Analytics events → dropped (logged at VERBOSE in debug)
+ * - Crash logs / exceptions → persisted via AppExceptionHandler (files/crashes/)
+ *   and will be forwarded to HA via P4.5-h crash-report channel.
+ */
 class Logger {
     companion object {
-        const val TAG = "ViewAssistCA"
+        const val TAG = "Barnabee"
     }
     fun d(message: String) {
         Log.d(TAG, message)
@@ -29,62 +31,16 @@ class Logger {
     }
 }
 
-class FirebaseManager private constructor(context: Context? = null) {
-    private var firebaseAnalytics: FirebaseAnalytics? = null
-    private var firebaseCrashlytics: FirebaseCrashlytics? = null
-
-    init {
-        initialiseFirebase(context)
-    }
-
-    private fun initialiseFirebase(context: Context?) {
-        if (context == null) {
-            Log.w(Logger.TAG, "Firebase context unavailable. Firebase features disabled.")
-            return
-        }
-
-        try {
-            val appContext = context.applicationContext
-            if (FirebaseApp.getApps(appContext).isEmpty()) {
-                Log.w(Logger.TAG, "FirebaseApp not initialized. Skipping Firebase setup.")
-                return
-            }
-
-            firebaseAnalytics = Firebase.analytics
-            firebaseCrashlytics = Firebase.crashlytics
-        } catch (e: Exception) {
-            Log.w(Logger.TAG, "Failed to initialize Firebase. Firebase features disabled.", e)
-            firebaseAnalytics = null
-            firebaseCrashlytics = null
-        }
-    }
+class FirebaseManager private constructor(@Suppress("UNUSED_PARAMETER") context: Context? = null) {
 
     companion object {
         @Volatile
         private var instance: FirebaseManager? = null
 
         fun getInstance(context: Context? = null): FirebaseManager {
-            instance?.let {
-                if ((it.firebaseAnalytics != null || it.firebaseCrashlytics != null) || context == null) {
-                    return it
-                }
-            }
+            instance?.let { return it }
             return synchronized(this) {
-                val existing = instance
-                if (existing != null) {
-                    if ((existing.firebaseAnalytics != null || existing.firebaseCrashlytics != null) || context == null) {
-                        existing
-                    } else {
-                        FirebaseManager(context).also { instance = it }
-                    }
-                } else {
-                    try {
-                        FirebaseManager(context).also { instance = it }
-                    } catch (e: Exception) {
-                        Log.w(Logger.TAG, "FirebaseManager fallback initialization used.", e)
-                        FirebaseManager().also { instance = it }
-                    }
-                }
+                instance ?: FirebaseManager(context).also { instance = it }
             }
         }
 
@@ -97,30 +53,44 @@ class FirebaseManager private constructor(context: Context? = null) {
         const val TRIM_MEMORY_UI_HIDDEN = "trim_memory_ui_hidden"
         const val TRIM_MEMORY_BACKGROUND = "trim_memory_background"
         const val LOST_NETWORK = "lost_network"
-
     }
 
     fun Map<String, Any?>.toBundle(): Bundle = bundleOf(*this.toList().toTypedArray())
 
     fun setCustomKeys(keys: Map<String, Any>) {
-        keys.forEach {
-            firebaseCrashlytics?.setCustomKey(it.key, it.value.toString())
+        if (BuildConfigHelper.DEBUG) {
+            Log.v(Logger.TAG, "analytics.setCustomKeys: $keys")
         }
     }
 
     fun logEvent(event: String, params: Map<String, String>) {
-        firebaseAnalytics?.logEvent(event, params.toBundle())
+        if (BuildConfigHelper.DEBUG) {
+            Log.v(Logger.TAG, "analytics.logEvent: $event $params")
+        }
     }
 
     fun setUserProperty(key: String, value: String) {
-        firebaseAnalytics?.setUserProperty(key, value)
+        if (BuildConfigHelper.DEBUG) {
+            Log.v(Logger.TAG, "analytics.setUserProperty: $key=$value")
+        }
     }
 
     fun addToCrashLog(message: String) {
-        firebaseCrashlytics?.log(message)
+        // Breadcrumb -> Logcat only. Full crash persistence happens in
+        // AppExceptionHandler.persistCrash() when an uncaught throws.
+        Log.i(Logger.TAG, "crash-breadcrumb: $message")
     }
 
     fun logException(exception: Exception) {
-        firebaseCrashlytics?.recordException(exception)
+        Log.e(Logger.TAG, "logException (non-fatal)", exception)
     }
+}
+
+private object BuildConfigHelper {
+    // Keep independent of generated BuildConfig so this file has no compile-order dep.
+    val DEBUG: Boolean = try {
+        Class.forName("com.msp1974.vacompanion.BuildConfig")
+            .getField("DEBUG")
+            .getBoolean(null)
+    } catch (_: Throwable) { false }
 }

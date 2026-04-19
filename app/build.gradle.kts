@@ -3,8 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
-//    id("com.google.gms.google-services")
-    id("com.google.firebase.crashlytics")
+    // Firebase plugins removed (Barnabee fork)
 }
 
 tasks.register("printVersionName") {
@@ -114,9 +113,10 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.material3)
     implementation(libs.core.splashscreen)
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.analytics)
-    implementation(libs.firebase.crashlytics.ndk)
+    // Firebase dependencies removed (Barnabee fork); re-add androidx libs that were
+    // previously pulled in transitively via Firebase/play-services
+    implementation(libs.androidx.localbroadcastmanager)
+    implementation(libs.androidx.documentfile)
     implementation (libs.androidx.material.icons.extended)
     implementation (libs.androidx.preference.ktx)
     implementation (libs.timber)
