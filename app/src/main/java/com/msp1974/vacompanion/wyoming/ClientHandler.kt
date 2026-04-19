@@ -716,23 +716,27 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
     private fun handlePipelineTimeout(stage: PipelineStage?) {
         log.d("Pipeline timed out${stage?.let { " at stage $it" } ?: ""}")
-        // Emit a structured error so the HA dashboard's last-error sensor
-        // fires — previously a silent reset just left the user guessing.
-        // Particularly valuable for TRANSCRIBE_TO_VOICE_STARTED, which almost
-        // always means HA's STT/VAD didn't accept the stream (integration
-        // stuck, STT engine dead, or pipeline mis-configured).
-        try {
-            emitError(
-                code = "pipeline.timeout",
-                component = "wyoming",
-                severity = "warn",
-                message = "Pipeline stage ${stage?.name ?: "UNKNOWN"} timed out after ${stage?.durationMs ?: 0}ms — ${stage?.rationale ?: ""}",
-                context = mapOf(
-                    "stage" to (stage?.name ?: "UNKNOWN"),
-                    "duration_ms" to (stage?.durationMs?.toString() ?: "0"),
-                ),
-            )
-        } catch (_: Exception) {}
+        // Only surface genuine failures as error-events. AUDIO_STOP_TO_IDLE is
+        // a scheduled defensive teardown after a *successful* turn ends; firing
+        // it is expected and must not pollute last-error. AUDIO_STOP_TO_NEXT_TURN
+        // simply means the user didn't follow up on a continue-conversation
+        // prompt — also benign.
+        val benign = stage == PipelineStage.AUDIO_STOP_TO_IDLE ||
+                stage == PipelineStage.AUDIO_STOP_TO_NEXT_TURN
+        if (!benign) {
+            try {
+                emitError(
+                    code = "pipeline.timeout",
+                    component = "wyoming",
+                    severity = "warn",
+                    message = "Pipeline stage ${stage?.name ?: "UNKNOWN"} timed out after ${stage?.durationMs ?: 0}ms — ${stage?.rationale ?: ""}",
+                    context = mapOf(
+                        "stage" to (stage?.name ?: "UNKNOWN"),
+                        "duration_ms" to (stage?.durationMs?.toString() ?: "0"),
+                    ),
+                )
+            } catch (_: Exception) {}
+        }
         resetPipeline()
     }
 
