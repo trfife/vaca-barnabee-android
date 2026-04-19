@@ -145,6 +145,20 @@ class OpenWakeWordEngine(
         if (it) emptyFlow()
         else flow {
             val microphoneInput = MicrophoneInput(frameSize = 1280)
+
+            // --- Pre-wake audio ring buffer -----------------------------------
+            // Keeps the last ~1.5s of PCM audio so that when a wake word fires
+            // and HA requests streaming, we can flush the buffered frames
+            // *before* switching to live audio. This lets HA's VAD see the
+            // user's command immediately instead of waiting for them to speak
+            // again, shaving ~1s off every turn.
+            //
+            // 16kHz × 2 bytes × 1.5s = 48000 bytes. Each frame is 1280 samples
+            // × 2 bytes = 2560 bytes, so ~18–19 frames fit in 1.5s.
+            val PRE_WAKE_BUFFER_FRAMES = 19
+            val preWakeBuffer = ArrayDeque<ByteArray>(PRE_WAKE_BUFFER_FRAMES + 1)
+            var wasStreaming = false
+
             // Load stop-word models from assets/stopWords/ (MicroWakeWord TFLite)
             // so "stop" can interrupt a pipeline even when using OpenWakeWord for wake.
             val stopDetector = try {
@@ -177,9 +191,30 @@ class OpenWakeWordEngine(
                             emit(AudioResult.AudioLevel(AudioDSP().audioLevel(audio)))
                         }
 
+                        // Convert once — reused for streaming, buffer, and stop-word.
+                        val pcmBytes = AudioDSP().floatArrayToByteBuffer(audio)
+
                         if (isStreaming) {
-                            val a = AudioDSP().floatArrayToByteBuffer(audio)
-                            emit(AudioResult.Audio(ByteString.copyFrom(a)))
+                            // Flush pre-wake buffer on the first streaming frame.
+                            if (!wasStreaming) {
+                                wasStreaming = true
+                                val buffered = preWakeBuffer.size
+                                if (buffered > 0) {
+                                    Timber.i("Pre-wake buffer: flushing $buffered frames (~${buffered * 80}ms) of audio")
+                                    for (chunk in preWakeBuffer) {
+                                        emit(AudioResult.Audio(ByteString.copyFrom(chunk)))
+                                    }
+                                    preWakeBuffer.clear()
+                                }
+                            }
+                            emit(AudioResult.Audio(ByteString.copyFrom(pcmBytes)))
+                        } else {
+                            wasStreaming = false
+                            // Buffer audio for pre-wake replay.
+                            if (preWakeBuffer.size >= PRE_WAKE_BUFFER_FRAMES) {
+                                preWakeBuffer.removeFirst()
+                            }
+                            preWakeBuffer.addLast(pcmBytes.copyOf())
                         }
 
                         val detections = processAudio(audio)
@@ -191,10 +226,9 @@ class OpenWakeWordEngine(
 
                         // Feed the same frame to the stop-word detector (TFLite).
                         if (stopDetector != null) {
-                            val byteArr = AudioDSP().floatArrayToByteBuffer(audio)
-                            val buf = ByteBuffer.allocateDirect(byteArr.size)
+                            val buf = ByteBuffer.allocateDirect(pcmBytes.size)
                             buf.order(ByteOrder.LITTLE_ENDIAN)
-                            buf.put(byteArr)
+                            buf.put(pcmBytes)
                             buf.rewind()
                             val stopHits = stopDetector.detect(buf)
                             for (hit in stopHits) {
