@@ -118,12 +118,60 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
     /** Monotonic counter for throttled periodic heartbeats off pingTimer. */
     private var pingTickCounter: Int = 0
 
-    private fun setPhase(newPhase: SatellitePhase) {
+    private fun setPhase(newPhase: SatellitePhase, reason: String? = null) {
         synchronized(phaseLock) {
             if (satellitePhase == newPhase) return
-            log.d("SatellitePhase: $satellitePhase → $newPhase")
+            log.d("SatellitePhase: $satellitePhase → $newPhase${if (reason != null) " ($reason)" else ""}")
+            val from = satellitePhase
             satellitePhase = newPhase
             emitStatusSnapshotLocked()
+            emitStateTrace("phase", from.name, newPhase.name, reason)
+        }
+    }
+
+    /**
+     * Single choke-point for [pipelineStatus] mutations. Emits a `state-trace`
+     * Wyoming custom-event so HA (and logcat) can see exactly which branch of
+     * the state machine fired. Prereq for diagnosing stuck-state regressions
+     * without needing to install a debug APK (see docs/state-machine.md).
+     */
+    private fun setPipelineStatus(newStatus: PipelineStatus, reason: String) {
+        if (pipelineStatus == newStatus) return
+        val from = pipelineStatus
+        pipelineStatus = newStatus
+        log.d("PipelineStatus: $from → $newStatus ($reason)")
+        emitStateTrace("pipeline_status", from.name, newStatus.name, reason)
+    }
+
+    /** Single choke-point for [satelliteStatus] mutations. See [setPipelineStatus]. */
+    private fun setSatelliteStatus(newStatus: SatelliteState, reason: String) {
+        if (satelliteStatus == newStatus) return
+        val from = satelliteStatus
+        satelliteStatus = newStatus
+        log.d("SatelliteStatus: $from → $newStatus ($reason)")
+        emitStateTrace("satellite_status", from.name, newStatus.name, reason)
+    }
+
+    /**
+     * Emit a structured state-trace Wyoming custom-event. Failures are swallowed
+     * — tracing MUST NOT crash the client. Kind is "phase" | "pipeline_status"
+     * | "satellite_status". [reason] is a short token (often the inbound event
+     * type) describing what caused the transition.
+     */
+    private fun emitStateTrace(kind: String, from: String, to: String, reason: String?) {
+        try {
+            val payload = buildJsonObject {
+                put("kind", kind)
+                put("from", from)
+                put("to", to)
+                put("reason", reason ?: "")
+                put("epoch", pipelineEpoch.get())
+                put("ts", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
+            }
+            sendCustomEvent("state-trace", payload)
+        } catch (ex: Exception) {
+            // Tracing is advisory — never let it break the pipeline.
+            log.e("emitStateTrace failed: ${ex.message}")
         }
     }
 
@@ -199,7 +247,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                                 if (intent.action == BroadcastSender.WAKE_WORD_DETECTED) {
                                     volumeDucking("all", true)
                                     markWakeNow()
-                                    setPhase(SatellitePhase.LISTENING)
+                                    setPhase(SatellitePhase.LISTENING, "wake-word")
                                     sendWakeWordDetection()
                                     sendStartPipeline()
                                 }
@@ -297,16 +345,16 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
             if (server.pipelineClient != null) {
                 log.d("Satellite taken over by $client_id from ${server.pipelineClient?.client_id}")
                 server.pipelineClient = this
-                satelliteStatus = SatelliteState.RUNNING
+                setSatelliteStatus(SatelliteState.RUNNING, "run-satellite/takeover")
             } else {
                 // Ensure alarm is inactive
                 actionAlarm(false)
 
                 // Start satellite functions
                 server.pipelineClient = this
-                satelliteStatus = SatelliteState.RUNNING
+                setSatelliteStatus(SatelliteState.RUNNING, "run-satellite/fresh")
                 server.satelliteStarted()
-                setPhase(SatellitePhase.IDLE)
+                setPhase(SatellitePhase.IDLE, "run-satellite")
                 log.d("Satellite started for $client_id")
             }
         } else {
@@ -329,9 +377,9 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
             actionAlarm(false)
             musicPlayer.stop()
 
-            pipelineStatus = PipelineStatus.INACTIVE
-            satelliteStatus = SatelliteState.STOPPED
-            setPhase(SatellitePhase.PAUSED)
+            setPipelineStatus(PipelineStatus.INACTIVE, "pause-satellite")
+            setSatelliteStatus(SatelliteState.STOPPED, "pause-satellite")
+            setPhase(SatellitePhase.PAUSED, "pause-satellite")
             server.pipelineClient = null
             config.homeAssistantConnectedIP = ""
             server.satelliteStopped()
@@ -349,7 +397,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
             // or late inbound events from previous turns self-drop.
             val epoch = pipelineEpoch.incrementAndGet()
             log.d("Streaming audio to server for $client_id (epoch $epoch)")
-            pipelineStatus = PipelineStatus.LISTENING
+            setPipelineStatus(PipelineStatus.LISTENING, "requestInputAudioStream")
             server.requestInputAudioStream()
         }
     }
@@ -357,7 +405,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
     private fun releaseInputAudioStream() {
         if (pipelineStatus != PipelineStatus.INACTIVE) {
             log.d("Stopping streaming audio to server for $client_id")
-            pipelineStatus = PipelineStatus.INACTIVE
+            setPipelineStatus(PipelineStatus.INACTIVE, "releaseInputAudioStream")
             server.releaseInputAudioStream()
         }
     }
@@ -401,20 +449,20 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                     "transcribe" -> {
                         // Sent when requesting voice command
                         volumeDucking("all", true)
-                        setPhase(SatellitePhase.LISTENING)
+                        setPhase(SatellitePhase.LISTENING, "transcribe")
                         requestInputAudioStream()
                         setPipelineNextStageTimeout(PipelineStage.TRANSCRIBE_TO_VOICE_STARTED)
                     }
 
                     "voice-started" -> {
                         // Sent when detected voice command started
-                        setPhase(SatellitePhase.LISTENING)
+                        setPhase(SatellitePhase.LISTENING, "voice-started")
                         setPipelineNextStageTimeout(PipelineStage.VOICE_STARTED_TO_STOPPED)
                     }
 
                     "voice-stopped" -> {
                         // Sent when detected voice command stopped
-                        setPhase(SatellitePhase.THINKING)
+                        setPhase(SatellitePhase.THINKING, "voice-stopped")
                         setPipelineNextStageTimeout(PipelineStage.VOICE_STOPPED_TO_TRANSCRIPT)
                     }
 
@@ -423,9 +471,9 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         releaseInputAudioStream()
                         if (event.getProp("text").lowercase().contains("never mind")) {
                             volumeDucking("all", false)
-                            setPhase(SatellitePhase.IDLE)
+                            setPhase(SatellitePhase.IDLE, "transcript/never-mind")
                         } else {
-                            setPhase(SatellitePhase.THINKING)
+                            setPhase(SatellitePhase.THINKING, "transcript")
                             // LLM/conversation engine can legitimately be slow.
                             setPipelineNextStageTimeout(PipelineStage.TRANSCRIPT_TO_SYNTHESIZE)
                         }
@@ -436,7 +484,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         lastResponseIsQuestion =
                             (event.getProp("text").replace("\n", "").endsWith("?"))
                         expectingTTSResponse = true
-                        setPhase(SatellitePhase.THINKING)
+                        setPhase(SatellitePhase.THINKING, "synthesize")
                         setPipelineNextStageTimeout(PipelineStage.SYNTHESIZE_TO_AUDIO_START)
                     }
 
@@ -447,7 +495,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                             volumeDucking("all", false)
                             // No TTS coming — we're done with this turn.
                             if (satellitePhase != SatellitePhase.TALKING) {
-                                setPhase(SatellitePhase.IDLE)
+                                setPhase(SatellitePhase.IDLE, "pipeline-ended")
                             }
                         }
                         if (pipelineStatus != PipelineStatus.STREAMING) {
@@ -459,8 +507,8 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         // Sent when audio stream about to start
                         expectingTTSResponse = false  // This is it so reset expecting
                         cancelPipelineNextStageTimeout() // Playing audio, cancel any timeout
-                        pipelineStatus = PipelineStatus.STREAMING
-                        setPhase(SatellitePhase.TALKING)
+                        setPipelineStatus(PipelineStatus.STREAMING, "audio-start")
+                        setPhase(SatellitePhase.TALKING, "audio-start")
                         volumeDucking("all", true)  // Duck here if announcement
                         pcmMediaPlayer.play()
                     }
@@ -477,7 +525,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         if (pcmMediaPlayer.isPlaying) {
                             pcmMediaPlayer.stop()
                         }
-                        pipelineStatus = PipelineStatus.INACTIVE
+                        setPipelineStatus(PipelineStatus.INACTIVE, "audio-stop")
                         sendEvent(
                             "played",
                         )
@@ -495,12 +543,12 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                             // Phase stays THINKING (not LISTENING): the mic isn't open
                             // until HA sends `transcribe`. Per rubber-duck review, we
                             // would otherwise falsely flash "listening" for up to 15s.
-                            setPhase(SatellitePhase.THINKING)
+                            setPhase(SatellitePhase.THINKING, "audio-stop/continue")
                             sendStartPipeline()
                             setPipelineNextStageTimeout(PipelineStage.AUDIO_STOP_TO_NEXT_TURN)
                         } else {
                             // Defensive teardown — no follow-up expected.
-                            setPhase(SatellitePhase.IDLE)
+                            setPhase(SatellitePhase.IDLE, "audio-stop/done")
                             setPipelineNextStageTimeout(PipelineStage.AUDIO_STOP_TO_IDLE)
                         }
 
@@ -621,7 +669,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
         // actually observes it. The next wake / transcribe / startSatellite
         // will clear it. Otherwise go to IDLE.
         if (satellitePhase != SatellitePhase.ERROR) {
-            setPhase(SatellitePhase.IDLE)
+            setPhase(SatellitePhase.IDLE, "resetPipeline")
         }
     }
 
