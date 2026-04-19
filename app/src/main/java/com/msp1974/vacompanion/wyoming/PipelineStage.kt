@@ -14,8 +14,15 @@ package com.msp1974.vacompanion.wyoming
  * of bugs this fork is trying to eliminate.
  */
 enum class PipelineStage(val durationMs: Long, val rationale: String) {
-    /** `transcribe` sent → HA responds `voice-started` (VAD trip). */
-    TRANSCRIBE_TO_VOICE_STARTED(5_000L, "VAD should fire fast once streaming starts"),
+    /** `transcribe` sent → HA responds `voice-started` (VAD trip).
+     *
+     * Bumped from 5s → 10s: HA's STT engine can take ~2–3 s to cold-start on the
+     * first pipeline run after integration reload, especially for on-device
+     * Whisper. A 5s window reliably caused false resets at the *first* utterance
+     * after any HA restart; 10s still catches genuinely stuck pipelines but
+     * gives a healthy HA its cold-start slack. Revisit once HA sends a more
+     * explicit "pipeline accepted" event. */
+    TRANSCRIBE_TO_VOICE_STARTED(10_000L, "VAD should fire fast once streaming starts (with STT cold-start slack)"),
 
     /** `voice-started` → `voice-stopped` (end of user speech). */
     VOICE_STARTED_TO_STOPPED(30_000L, "User can speak for a while"),

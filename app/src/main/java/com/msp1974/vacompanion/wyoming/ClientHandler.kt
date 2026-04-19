@@ -716,6 +716,23 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
     private fun handlePipelineTimeout(stage: PipelineStage?) {
         log.d("Pipeline timed out${stage?.let { " at stage $it" } ?: ""}")
+        // Emit a structured error so the HA dashboard's last-error sensor
+        // fires — previously a silent reset just left the user guessing.
+        // Particularly valuable for TRANSCRIBE_TO_VOICE_STARTED, which almost
+        // always means HA's STT/VAD didn't accept the stream (integration
+        // stuck, STT engine dead, or pipeline mis-configured).
+        try {
+            emitError(
+                code = "pipeline.timeout",
+                component = "wyoming",
+                severity = "warn",
+                message = "Pipeline stage ${stage?.name ?: "UNKNOWN"} timed out after ${stage?.durationMs ?: 0}ms — ${stage?.rationale ?: ""}",
+                context = mapOf(
+                    "stage" to (stage?.name ?: "UNKNOWN"),
+                    "duration_ms" to (stage?.durationMs?.toString() ?: "0"),
+                ),
+            )
+        } catch (_: Exception) {}
         resetPipeline()
     }
 
@@ -728,6 +745,12 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
         hardCapRunnable = null
 
         volumeDucking("all", false)
+
+        // Defensive: ensure the TTS-playback gate is cleared on any reset. If
+        // audio-stop was skipped (e.g. HA error mid-TTS, socket drop during
+        // playback) the gate could otherwise remain "open" for its full tail
+        // window and silently suppress the next wake.
+        try { com.msp1974.vacompanion.audio.TTSPlaybackGate.stopSpeaking() } catch (_: Exception) {}
 
         if (pipelineStatus != PipelineStatus.STREAMING) {
             releaseInputAudioStream()
