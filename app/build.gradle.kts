@@ -21,11 +21,14 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.msp1974.vacompanion"
+        // Barnabee fork uses a distinct applicationId so it installs alongside
+        // stock VACA (same signing key would be required otherwise, and stock
+        // ships signed by msp1974's debug key).
+        applicationId = "com.msp1974.vacompanion.barnabee"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.10.0"
+        versionName = "0.10.0-barnabee"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
@@ -34,17 +37,38 @@ android {
         }
     }
 
+    signingConfigs {
+        create("barnabee") {
+            val keystorePath = (project.findProperty("BARNABEE_KEYSTORE_PATH") as String?)
+                ?: System.getenv("BARNABEE_KEYSTORE_PATH")
+            val keystorePass = (project.findProperty("BARNABEE_KEYSTORE_PASS") as String?)
+                ?: System.getenv("BARNABEE_KEYSTORE_PASS")
+            val keyAliasProp = (project.findProperty("BARNABEE_KEY_ALIAS") as String?)
+                ?: System.getenv("BARNABEE_KEY_ALIAS") ?: "barnabee"
+            val keyPassProp = (project.findProperty("BARNABEE_KEY_PASS") as String?)
+                ?: System.getenv("BARNABEE_KEY_PASS") ?: keystorePass
+            if (keystorePath != null && keystorePass != null) {
+                storeFile = file(keystorePath)
+                storePassword = keystorePass
+                keyAlias = keyAliasProp
+                keyPassword = keyPassProp ?: keystorePass
+            }
+        }
+    }
+
     buildTypes {
         applicationVariants.all {
             this.outputs
                 .map { it as com.android.build.gradle.internal.api.ApkVariantOutputImpl }
                 .forEach { output ->
-                    var apkName = "vaca-" + this.versionName + "-" + this.buildType.name + ".apk"
+                    var apkName = "barnabee-" + this.versionName + "-" + this.buildType.name + ".apk"
                     output.outputFileName = apkName
                 }
         }
         debug {
             isMinifyEnabled = false
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
         }
         release {
             isMinifyEnabled = true
@@ -53,7 +77,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            // Fall back to debug signing if Barnabee keystore not configured
+            // (e.g. local dev without keys available). CI always provides keys.
+            val barnabeeSigning = signingConfigs.getByName("barnabee")
+            signingConfig = if (barnabeeSigning.storeFile != null) {
+                barnabeeSigning
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
     compileOptions {
