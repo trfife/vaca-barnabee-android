@@ -510,6 +510,11 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
             // Events that must have a running satellite to be processed
             if (satelliteStatus == SatelliteState.RUNNING) {
+                // Snapshot the epoch at event arrival. If resetPipeline() bumped
+                // the epoch (e.g. stop-word cancel), stale pipeline events from
+                // the old turn must be silently dropped.
+                val eventEpoch = pipelineEpoch.get()
+
                 when (event.type) {
                     "pause-satellite" -> {
                         stopSatellite()
@@ -537,24 +542,33 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
                     "transcript" -> {
                         // Sent when STT converted voice command to text
-                        releaseInputAudioStream()
-                        if (event.getProp("text").lowercase().contains("never mind")) {
-                            volumeDucking("all", false)
-                            setPhase(SatellitePhase.IDLE, "transcript/never-mind")
+                        // If the pipeline was cancelled (stop-word), ignore stale transcript.
+                        if (satellitePhase == SatellitePhase.IDLE) {
+                            log.d("Dropping stale transcript (phase=IDLE, epoch=$eventEpoch)")
                         } else {
-                            setPhase(SatellitePhase.THINKING, "transcript")
-                            // LLM/conversation engine can legitimately be slow.
-                            setPipelineNextStageTimeout(PipelineStage.TRANSCRIPT_TO_SYNTHESIZE)
+                            releaseInputAudioStream()
+                            if (event.getProp("text").lowercase().contains("never mind")) {
+                                volumeDucking("all", false)
+                                setPhase(SatellitePhase.IDLE, "transcript/never-mind")
+                            } else {
+                                setPhase(SatellitePhase.THINKING, "transcript")
+                                // LLM/conversation engine can legitimately be slow.
+                                setPipelineNextStageTimeout(PipelineStage.TRANSCRIPT_TO_SYNTHESIZE)
+                            }
                         }
                     }
 
                     "synthesize" -> {
                         // Sent when conversation engine sent response to command
-                        lastResponseIsQuestion =
-                            (event.getProp("text").replace("\n", "").endsWith("?"))
-                        expectingTTSResponse = true
-                        setPhase(SatellitePhase.THINKING, "synthesize")
-                        setPipelineNextStageTimeout(PipelineStage.SYNTHESIZE_TO_AUDIO_START)
+                        if (satellitePhase == SatellitePhase.IDLE) {
+                            log.d("Dropping stale synthesize (phase=IDLE, epoch=$eventEpoch)")
+                        } else {
+                            lastResponseIsQuestion =
+                                (event.getProp("text").replace("\n", "").endsWith("?"))
+                            expectingTTSResponse = true
+                            setPhase(SatellitePhase.THINKING, "synthesize")
+                            setPipelineNextStageTimeout(PipelineStage.SYNTHESIZE_TO_AUDIO_START)
+                        }
                     }
 
                     "pipeline-ended" -> {
@@ -573,14 +587,19 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                     }
 
                     "audio-start" -> {
-                        // Sent when audio stream about to start
-                        expectingTTSResponse = false  // This is it so reset expecting
-                        cancelPipelineNextStageTimeout() // Playing audio, cancel any timeout
-                        setPipelineStatus(PipelineStatus.STREAMING, "audio-start")
-                        setPhase(SatellitePhase.TALKING, "audio-start")
-                        volumeDucking("all", true)  // Duck here if announcement
-                        com.msp1974.vacompanion.audio.TTSPlaybackGate.startSpeaking()
-                        pcmMediaPlayer.play()
+                        // Sent when audio stream about to start.
+                        // Drop if pipeline was cancelled (stop-word reset).
+                        if (satellitePhase == SatellitePhase.IDLE) {
+                            log.d("Dropping stale audio-start (phase=IDLE, epoch=$eventEpoch)")
+                        } else {
+                            expectingTTSResponse = false  // This is it so reset expecting
+                            cancelPipelineNextStageTimeout() // Playing audio, cancel any timeout
+                            setPipelineStatus(PipelineStatus.STREAMING, "audio-start")
+                            setPhase(SatellitePhase.TALKING, "audio-start")
+                            volumeDucking("all", true)  // Duck here if announcement
+                            com.msp1974.vacompanion.audio.TTSPlaybackGate.startSpeaking()
+                            pcmMediaPlayer.play()
+                        }
                     }
 
                     "audio-chunk" -> {
