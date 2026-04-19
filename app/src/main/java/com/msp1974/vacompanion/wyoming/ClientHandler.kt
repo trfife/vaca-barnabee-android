@@ -547,9 +547,14 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                             log.d("Dropping stale transcript (phase=IDLE, epoch=$eventEpoch)")
                         } else {
                             releaseInputAudioStream()
-                            if (event.getProp("text").lowercase().contains("never mind")) {
+                            val text = event.getProp("text").lowercase()
+                                .replace("[", "").replace("]", "")  // strip speaker tags
+                            // Cancel phrases: user changed their mind or said "stop".
+                            val cancelPhrases = listOf("never mind", "nevermind", "stop", "stop.", "cancel")
+                            if (cancelPhrases.any { text.trim().endsWith(it) || text.trim() == it }) {
+                                log.i("Cancel phrase in transcript: \"${event.getProp("text")}\"")
                                 volumeDucking("all", false)
-                                setPhase(SatellitePhase.IDLE, "transcript/never-mind")
+                                resetPipeline()
                             } else {
                                 setPhase(SatellitePhase.THINKING, "transcript")
                                 // LLM/conversation engine can legitimately be slow.
