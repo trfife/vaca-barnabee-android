@@ -96,6 +96,83 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
      */
     private var hardCapRunnable: Runnable? = null
 
+    // --- Satellite phase (user-facing coarse state) --------------------------
+    //
+    // Emitted to HA as `sensors.satellite_state` for the Barnabee dashboard
+    // "listening / thinking / talking" indicators. See SatellitePhase.kt for
+    // the rules (notably: ERROR is sticky; audio-stop continue stays THINKING
+    // until HA's next `transcribe` since the mic isn't actually live in that
+    // window).
+    //
+    // All phase + timestamp mutations MUST go through [setPhase]/[markWakeNow]/
+    // [markPipelineSuccessNow]/[markErrorNow] under [phaseLock]. Callers come
+    // from three threads (reader, wake-word broadcast receiver, ping timer)
+    // and `sendStatus` path is not otherwise synchronized.
+    private val phaseLock = Any()
+
+    @Volatile private var satellitePhase: SatellitePhase = SatellitePhase.IDLE
+    @Volatile private var lastWakeAtMs: Long = 0L
+    @Volatile private var lastPipelineSuccessAtMs: Long = 0L
+    @Volatile private var lastErrorAtMs: Long = 0L
+
+    /** Monotonic counter for throttled periodic heartbeats off pingTimer. */
+    private var pingTickCounter: Int = 0
+
+    private fun setPhase(newPhase: SatellitePhase) {
+        synchronized(phaseLock) {
+            if (satellitePhase == newPhase) return
+            log.d("SatellitePhase: $satellitePhase → $newPhase")
+            satellitePhase = newPhase
+            emitStatusSnapshotLocked()
+        }
+    }
+
+    private fun markWakeNow() {
+        synchronized(phaseLock) {
+            lastWakeAtMs = System.currentTimeMillis()
+            // Treat wake as a real transition — clears a sticky ERROR.
+            if (satellitePhase == SatellitePhase.ERROR) {
+                satellitePhase = SatellitePhase.LISTENING
+            }
+            emitStatusSnapshotLocked()
+        }
+    }
+
+    private fun markPipelineSuccessNow() {
+        synchronized(phaseLock) {
+            lastPipelineSuccessAtMs = System.currentTimeMillis()
+            emitStatusSnapshotLocked()
+        }
+    }
+
+    private fun markErrorNow() {
+        synchronized(phaseLock) {
+            lastErrorAtMs = System.currentTimeMillis()
+            satellitePhase = SatellitePhase.ERROR
+            emitStatusSnapshotLocked()
+        }
+    }
+
+    /** Must be called under [phaseLock]. Builds + sends the sensors payload. */
+    private fun emitStatusSnapshotLocked() {
+        val stageName = currentStage?.name ?: "NONE"
+        val payload = buildJsonObject {
+            put("timestamp", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
+            putJsonObject("sensors") {
+                put("satellite_state", satellitePhase.wireValue)
+                put("pipeline_stage", stageName)
+                put("last_wake_at", lastWakeAtMs)
+                put("last_pipeline_success_at", lastPipelineSuccessAtMs)
+                put("last_error_at", lastErrorAtMs)
+            }
+        }
+        try {
+            sendStatus(payload)
+        } catch (ex: Exception) {
+            log.e("emitStatusSnapshot failed: ${ex.message}")
+        }
+    }
+
     // Initiate wake word broadcast receiver
     var wakeWordBroadcastReceiver: BroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -114,6 +191,8 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                             else -> {
                                 if (intent.action == BroadcastSender.WAKE_WORD_DETECTED) {
                                     volumeDucking("all", true)
+                                    markWakeNow()
+                                    setPhase(SatellitePhase.LISTENING)
                                     sendWakeWordDetection()
                                     sendStartPipeline()
                                 }
@@ -220,6 +299,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                 server.pipelineClient = this
                 satelliteStatus = SatelliteState.RUNNING
                 server.satelliteStarted()
+                setPhase(SatellitePhase.IDLE)
                 log.d("Satellite started for $client_id")
             }
         } else {
@@ -244,6 +324,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
             pipelineStatus = PipelineStatus.INACTIVE
             satelliteStatus = SatelliteState.STOPPED
+            setPhase(SatellitePhase.PAUSED)
             server.pipelineClient = null
             config.homeAssistantConnectedIP = ""
             server.satelliteStopped()
@@ -313,17 +394,20 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                     "transcribe" -> {
                         // Sent when requesting voice command
                         volumeDucking("all", true)
+                        setPhase(SatellitePhase.LISTENING)
                         requestInputAudioStream()
                         setPipelineNextStageTimeout(PipelineStage.TRANSCRIBE_TO_VOICE_STARTED)
                     }
 
                     "voice-started" -> {
                         // Sent when detected voice command started
+                        setPhase(SatellitePhase.LISTENING)
                         setPipelineNextStageTimeout(PipelineStage.VOICE_STARTED_TO_STOPPED)
                     }
 
                     "voice-stopped" -> {
                         // Sent when detected voice command stopped
+                        setPhase(SatellitePhase.THINKING)
                         setPipelineNextStageTimeout(PipelineStage.VOICE_STOPPED_TO_TRANSCRIPT)
                     }
 
@@ -332,7 +416,9 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         releaseInputAudioStream()
                         if (event.getProp("text").lowercase().contains("never mind")) {
                             volumeDucking("all", false)
+                            setPhase(SatellitePhase.IDLE)
                         } else {
+                            setPhase(SatellitePhase.THINKING)
                             // LLM/conversation engine can legitimately be slow.
                             setPipelineNextStageTimeout(PipelineStage.TRANSCRIPT_TO_SYNTHESIZE)
                         }
@@ -343,6 +429,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         lastResponseIsQuestion =
                             (event.getProp("text").replace("\n", "").endsWith("?"))
                         expectingTTSResponse = true
+                        setPhase(SatellitePhase.THINKING)
                         setPipelineNextStageTimeout(PipelineStage.SYNTHESIZE_TO_AUDIO_START)
                     }
 
@@ -351,6 +438,10 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         if (!expectingTTSResponse) {
                             cancelPipelineNextStageTimeout()
                             volumeDucking("all", false)
+                            // No TTS coming — we're done with this turn.
+                            if (satellitePhase != SatellitePhase.TALKING) {
+                                setPhase(SatellitePhase.IDLE)
+                            }
                         }
                         if (pipelineStatus != PipelineStatus.STREAMING) {
                             releaseInputAudioStream()
@@ -362,6 +453,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         expectingTTSResponse = false  // This is it so reset expecting
                         cancelPipelineNextStageTimeout() // Playing audio, cancel any timeout
                         pipelineStatus = PipelineStatus.STREAMING
+                        setPhase(SatellitePhase.TALKING)
                         volumeDucking("all", true)  // Duck here if announcement
                         pcmMediaPlayer.play()
                     }
@@ -383,21 +475,32 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                             "played",
                         )
 
+                        // Turn completed successfully — mark the timestamp
+                        // before possibly queuing a follow-up turn.
+                        markPipelineSuccessNow()
+
                         if (config.continueConversation || lastResponseIsQuestion) {
                             // Re-arm for the follow-up turn. Upstream bug: no timeout was
                             // armed here, so if HA never replied to the new pipeline we
                             // hung in LISTENING forever. That was the "stuck listening"
                             // pain point; fix per docs/state-machine.md §3.
+                            //
+                            // Phase stays THINKING (not LISTENING): the mic isn't open
+                            // until HA sends `transcribe`. Per rubber-duck review, we
+                            // would otherwise falsely flash "listening" for up to 15s.
+                            setPhase(SatellitePhase.THINKING)
                             sendStartPipeline()
                             setPipelineNextStageTimeout(PipelineStage.AUDIO_STOP_TO_NEXT_TURN)
                         } else {
                             // Defensive teardown — no follow-up expected.
+                            setPhase(SatellitePhase.IDLE)
                             setPipelineNextStageTimeout(PipelineStage.AUDIO_STOP_TO_IDLE)
                         }
 
                     }
 
                     "error" -> {
+                        markErrorNow()
                         config.eventBroadcaster.notifyEvent(Event("recognitionError", "", event.getProp("code")))
                         resetPipeline()
                     }
@@ -505,6 +608,14 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
             releaseInputAudioStream()
         }
         sendAudioStop()
+
+        // Sticky ERROR: if we got here because of an `error` event we just
+        // recorded (markErrorNow), leave the phase as ERROR so the dashboard
+        // actually observes it. The next wake / transcribe / startSatellite
+        // will clear it. Otherwise go to IDLE.
+        if (satellitePhase != SatellitePhase.ERROR) {
+            setPhase(SatellitePhase.IDLE)
+        }
     }
 
     private fun handleCustomEvent(event: WyomingPacket) {
@@ -648,6 +759,15 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         put("text", "")
                     }
                 )
+                // Heartbeat: re-emit the status snapshot every ~14s (7 ticks
+                // * 2s) so HA sees a fresh timestamp even if no state has
+                // changed. Cheap compared to ping itself.
+                pingTickCounter++
+                if (pingTickCounter % 7 == 0) {
+                    synchronized(phaseLock) {
+                        emitStatusSnapshotLocked()
+                    }
+                }
             }
         },0,2000)
     }
