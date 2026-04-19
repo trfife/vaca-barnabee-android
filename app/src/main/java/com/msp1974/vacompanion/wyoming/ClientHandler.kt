@@ -296,6 +296,12 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                             alarmPlayer.isSounding -> {
                                 actionAlarm(false)
                             }
+                            // Stop word while pipeline is active → cancel the pipeline.
+                            intent.action == BroadcastSender.STOP_WORD_DETECTED
+                                    && satellitePhase != SatellitePhase.IDLE -> {
+                                log.i("Stop word → cancelling pipeline (phase=$satellitePhase)")
+                                resetPipeline()
+                            }
                             else -> {
                                 if (intent.action == BroadcastSender.WAKE_WORD_DETECTED) {
                                     volumeDucking("all", true)

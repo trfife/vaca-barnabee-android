@@ -10,6 +10,9 @@ import com.msp1974.vacompanion.audio.AudioDSP
 import com.msp1974.vacompanion.audio.MicrophoneInput
 import com.msp1974.vacompanion.settings.APPConfig
 import com.msp1974.vacompanion.wakeword.WakeWordEngineProvider
+import com.msp1974.vacompanion.wakeword.microwakeword.microwakeword.MicroWakeWord
+import com.msp1974.vacompanion.wakeword.microwakeword.microwakeword.MicroWakeWordDetector
+import com.msp1974.vacompanion.wakeword.microwakeword.providers.AssetWakeWordProvider
 import com.msp1974.vacompanion.wakeword.openwakeword.audio.AudioProcessor
 import com.msp1974.vacompanion.wakeword.openwakeword.ml.OnnxModelRunner
 import com.msp1974.vacompanion.wakeword.openwakeword.model.WakeWordModel
@@ -17,6 +20,8 @@ import com.msp1974.vacompanion.wakeword.openwakeword.model.WakeWordScore
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.math.abs
 
 
@@ -140,6 +145,25 @@ class OpenWakeWordEngine(
         if (it) emptyFlow()
         else flow {
             val microphoneInput = MicrophoneInput(frameSize = 1280)
+            // Load stop-word models from assets/stopWords/ (MicroWakeWord TFLite)
+            // so "stop" can interrupt a pipeline even when using OpenWakeWord for wake.
+            val stopDetector = try {
+                val stopWords = AssetWakeWordProvider(assetManager, "stopWords").get()
+                if (stopWords.isNotEmpty()) {
+                    val micros = stopWords.mapNotNull { ww ->
+                        runCatching { MicroWakeWord.fromWakeWord(ww) }
+                            .onFailure { Timber.w(it, "Failed to load stop-word model: ${ww.id}") }
+                            .getOrNull()
+                    }
+                    if (micros.isNotEmpty()) {
+                        Timber.i("Stop-word detector loaded with ${micros.size} model(s): ${micros.joinToString { it.wakeWord }}")
+                        MicroWakeWordDetector(micros)
+                    } else null
+                } else null
+            } catch (ex: Exception) {
+                Timber.w(ex, "Could not create stop-word detector")
+                null
+            }
             try {
                 microphoneInput.start()
                 emit(AudioResult.EngineStatus("Started"))
@@ -164,11 +188,27 @@ class OpenWakeWordEngine(
                                 emit(AudioResult.WakeDetected(detection))
                             }
                         }
+
+                        // Feed the same frame to the stop-word detector (TFLite).
+                        if (stopDetector != null) {
+                            val byteArr = AudioDSP().floatArrayToByteBuffer(audio)
+                            val buf = ByteBuffer.allocateDirect(byteArr.size)
+                            buf.order(ByteOrder.LITTLE_ENDIAN)
+                            buf.put(byteArr)
+                            buf.rewind()
+                            val stopHits = stopDetector.detect(buf)
+                            for (hit in stopHits) {
+                                if (hit.score > 0.1f) {
+                                    emit(AudioResult.StopDetected(hit))
+                                }
+                            }
+                        }
                     }
                     yield()
                 }
             } finally {
                 microphoneInput.close()
+                stopDetector?.close()
                 emit(AudioResult.EngineStatus("Stopped"))
             }
         }
