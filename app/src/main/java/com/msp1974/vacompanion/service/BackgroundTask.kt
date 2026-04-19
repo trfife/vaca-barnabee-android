@@ -336,13 +336,17 @@ internal class BackgroundTaskController (private val context: Context): EventLis
                     is WakeWordEngineProvider.AudioResult.WakeDetected -> {
                         holdLastDetectionLevel(it.detection.score)
                         if (it.detection.score >= config.wakeWordThreshold) {
-                            val now = System.currentTimeMillis()
-                            val lastDetection = detectionCooldowns[it.detection.wakeWordId]
+                            if (com.msp1974.vacompanion.audio.TTSPlaybackGate.isSpeaking()) {
+                                Timber.i("Suppressing wake '${it.detection.wakeWord}' (score=${it.detection.score}) — TTS is playing")
+                            } else {
+                                val now = System.currentTimeMillis()
+                                val lastDetection = detectionCooldowns[it.detection.wakeWordId]
 
-                            if (lastDetection == null || detectionCooldownMs == 0L || now - lastDetection >= detectionCooldownMs) {
-                                Timber.i("Wake word detected: ${it.detection.wakeWord}")
-                                wakeWordDetected(it.detection, engine!!.isStreaming())
-                                detectionCooldowns[it.detection.wakeWordId] = now
+                                if (lastDetection == null || detectionCooldownMs == 0L || now - lastDetection >= detectionCooldownMs) {
+                                    Timber.i("Wake word detected: ${it.detection.wakeWord}")
+                                    wakeWordDetected(it.detection, engine!!.isStreaming())
+                                    detectionCooldowns[it.detection.wakeWordId] = now
+                                }
                             }
                         }
                     }

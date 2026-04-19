@@ -290,6 +290,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                             pcmMediaPlayer.isPlaying -> {
                                 sendAudioStop()
                                 pcmMediaPlayer.stop()
+                                com.msp1974.vacompanion.audio.TTSPlaybackGate.stopSpeaking()
                                 volumeDucking("music", false)
                             }
                             alarmPlayer.isSounding -> {
@@ -572,6 +573,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         setPipelineStatus(PipelineStatus.STREAMING, "audio-start")
                         setPhase(SatellitePhase.TALKING, "audio-start")
                         volumeDucking("all", true)  // Duck here if announcement
+                        com.msp1974.vacompanion.audio.TTSPlaybackGate.startSpeaking()
                         pcmMediaPlayer.play()
                     }
 
@@ -587,6 +589,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         if (pcmMediaPlayer.isPlaying) {
                             pcmMediaPlayer.stop()
                         }
+                        com.msp1974.vacompanion.audio.TTSPlaybackGate.stopSpeaking()
                         setPipelineStatus(PipelineStatus.INACTIVE, "audio-stop")
                         sendEvent(
                             "played",
