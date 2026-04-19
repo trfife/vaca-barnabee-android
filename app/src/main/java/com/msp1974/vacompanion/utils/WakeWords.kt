@@ -18,7 +18,8 @@ class WakeWords(val context: Context) {
         "hey_mycroft" to WakeWord("Hey Mycroft", "hey_mycroft.onnx"),
         "hey_raspy" to WakeWord("Hey Rhasspy", "hey_rhasspy.onnx"),
         "ok_nabu" to WakeWord("Ok Nabu", "ok_nabu.onnx"),
-        "ok_computer" to WakeWord("Ok Computer", "ok_computer.onnx")
+        "ok_computer" to WakeWord("Ok Computer", "ok_computer.onnx"),
+        "barnabee" to WakeWord("Barnabee", "barnabee.onnx")
     )
 
     fun getCustomWakeWords(path: String): Map<String, WakeWord> {
