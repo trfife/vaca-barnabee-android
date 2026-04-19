@@ -51,7 +51,13 @@ class VAMediaPlayer(val context: Context) {
                 Timber.i("Music started")
             } catch (ex: Exception) {
                 Timber.e("Error playing music: $ex")
-                ex.printStackTrace()
+                com.msp1974.vacompanion.wyoming.ErrorReporter.report(
+                    code = "audio.music",
+                    component = "audio",
+                    severity = "error",
+                    message = "ExoPlayer music playback failed",
+                    cause = ex,
+                )
             }
         })
     }

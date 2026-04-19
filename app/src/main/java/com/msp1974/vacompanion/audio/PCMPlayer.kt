@@ -56,7 +56,13 @@ class PCMMediaPlayer(context: Context) {
                     Thread.sleep(10)
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                com.msp1974.vacompanion.wyoming.ErrorReporter.report(
+                    code = "audio.pcm",
+                    component = "audio",
+                    severity = "error",
+                    message = "PCM playback thread failed",
+                    cause = e,
+                )
             }
         }.start()
     }

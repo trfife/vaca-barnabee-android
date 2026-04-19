@@ -199,7 +199,14 @@ class OpenWakeWordEngine(
                     }
                 } catch (e: Exception) {
                     Timber.e("Error processing model ${model.name} ->$e")
-                    e.printStackTrace()
+                    com.msp1974.vacompanion.wyoming.ErrorReporter.report(
+                        code = "wake.inference",
+                        component = "wakeword",
+                        severity = "error",
+                        message = "OpenWakeWord inference failed for ${model.name}",
+                        cause = e,
+                        context = mapOf("model" to model.name),
+                    )
                 }
             }
         }

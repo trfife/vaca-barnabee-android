@@ -175,6 +175,58 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
         }
     }
 
+    /**
+     * Emit a structured error-event Wyoming custom-event. Never throws.
+     *
+     * @param code short machine-readable token (e.g. "pipeline.recv", "audio.play")
+     * @param component producing subsystem (e.g. "wyoming", "audio", "wakeword")
+     * @param severity "info" | "warn" | "error" | "fatal"
+     * @param message human-readable summary (safe to display)
+     * @param cause optional throwable; stack + class captured
+     * @param context optional small structured context (short keys/values)
+     */
+    fun emitError(
+        code: String,
+        component: String,
+        severity: String,
+        message: String,
+        cause: Throwable? = null,
+        context: Map<String, String>? = null,
+    ) {
+        try {
+            val payload = buildJsonObject {
+                put("code", code)
+                put("component", component)
+                put("severity", severity)
+                put("message", message)
+                put("epoch", pipelineEpoch.get())
+                put("ts", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
+                if (cause != null) {
+                    put("exception_class", cause.javaClass.name)
+                    put("exception_message", cause.message ?: "")
+                    val sw = java.io.StringWriter()
+                    cause.printStackTrace(java.io.PrintWriter(sw))
+                    val trace = sw.toString()
+                    // Cap stack trace size so Wyoming payload stays bounded.
+                    put("stack", if (trace.length > 4000) trace.substring(0, 4000) + "...[truncated]" else trace)
+                }
+                if (!context.isNullOrEmpty()) {
+                    putJsonObject("context") {
+                        for ((k, v) in context) put(k, v)
+                    }
+                }
+            }
+            sendCustomEvent("error-event", payload)
+            log.e("[$severity/$component/$code] $message${cause?.let { " (${it.javaClass.simpleName}: ${it.message})" } ?: ""}")
+            if (severity == "error" || severity == "fatal") {
+                try { markErrorNow() } catch (_: Exception) {}
+            }
+        } catch (ex: Exception) {
+            // Error reporting must never cascade.
+            log.e("emitError failed: ${ex.message}")
+        }
+    }
+
     private fun markWakeNow() {
         synchronized(phaseLock) {
             lastWakeAtMs = System.currentTimeMillis()
@@ -266,6 +318,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
     fun run() {
         val connections = config.atomicConnectionCount.incrementAndGet()
         log.d("Client $client_id connected from ${client.inetAddress.hostAddress}. Connections: $connections")
+        ErrorReporter.register(this)
         startIntervalPing()
         while (runClient) {
             try {
@@ -291,6 +344,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
     @OptIn(ExperimentalAtomicApi::class)
     fun stop() {
         log.d("Stopping client $client_id connection handler")
+        ErrorReporter.unregister(this)
         stopIntervalPing()
 
         if (satelliteStatus == SatelliteState.RUNNING) {
@@ -570,8 +624,13 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                 }
             }
         } catch (ex: Exception) {
-            log.e("Error handling event: $ex")
-            ex.printStackTrace()
+            emitError(
+                code = "pipeline.recv",
+                component = "wyoming",
+                severity = "error",
+                message = "Unhandled exception processing Wyoming event",
+                cause = ex,
+            )
         }
     }
 

@@ -1,5 +1,6 @@
 package com.msp1974.vacompanion.service
 
+import com.msp1974.vacompanion.wyoming.ErrorReporter
 import android.Manifest
 import android.app.KeyguardManager
 import android.app.PendingIntent
@@ -130,7 +131,13 @@ class VAForegroundService : LifecycleService() {
                         keyguardLock?.disableKeyguard()
                     } catch (ex: Exception) {
                         Timber.i("Disabling keyguard didn't work")
-                        ex.printStackTrace()
+                        ErrorReporter.report(
+                            code = "keyguard.disable",
+                            component = "foreground",
+                            severity = "warn",
+                            message = "Disabling keyguard failed",
+                            cause = ex,
+                        )
                         firebase.logException(ex)
                     }
 
@@ -224,7 +231,13 @@ class VAForegroundService : LifecycleService() {
             keyguardLock!!.reenableKeyguard()
         } catch (ex: Exception) {
             Timber.i("Enabling keyguard didn't work")
-            ex.printStackTrace()
+            ErrorReporter.report(
+                code = "keyguard.enable",
+                component = "foreground",
+                severity = "warn",
+                message = "Re-enabling keyguard failed",
+                cause = ex,
+            )
             firebase.logException(ex)
         }
     }

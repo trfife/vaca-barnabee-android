@@ -59,7 +59,13 @@ internal class SoundClipPlayer(private val context: Context, private val resId: 
                 mediaPlayer.play()
             })
         } catch (ex: Exception) {
-            ex.printStackTrace()
+            com.msp1974.vacompanion.wyoming.ErrorReporter.report(
+                code = "audio.play",
+                component = "audio",
+                severity = "error",
+                message = "MediaPlayer playback failed",
+                cause = ex,
+            )
         }
     }
 }
