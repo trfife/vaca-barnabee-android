@@ -1026,6 +1026,22 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
         )
     }
 
+    fun sendWakeScore(wakeWord: String, score: Float, threshold: Float) {
+        try {
+            sendCustomEvent(
+                "wake-score",
+                buildJsonObject {
+                    put("wake_word", wakeWord)
+                    put("score", (score * 1000).toInt() / 1000.0)
+                    put("threshold", (threshold * 1000).toInt() / 1000.0)
+                    put("ts", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
+                },
+            )
+        } catch (ex: Exception) {
+            log.w("sendWakeScore failed: $ex")
+        }
+    }
+
     fun sendStartPipeline() {
         sendEvent(
             "run-pipeline",

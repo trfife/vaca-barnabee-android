@@ -398,6 +398,7 @@ internal class BackgroundTaskController (private val context: Context): EventLis
 
     private fun wakeWordDetected(detection: WakeWordEngineProvider.WakeWordDetection, isStreaming: Boolean) {
         Timber.i("${detection.wakeWord} wake word detected at ${detection.score}, threshold is ${config.wakeWordThreshold}")
+        server.sendWakeScore(detection.wakeWord, detection.score, config.wakeWordThreshold)
         firebase.logEvent(
             FirebaseManager.WAKE_WORD_DETECTED, mapOf(
                 "wake_word" to config.wakeWord,

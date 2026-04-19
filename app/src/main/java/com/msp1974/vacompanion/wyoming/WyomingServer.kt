@@ -72,6 +72,10 @@ class WyomingTCPServer (val context: Context, val port: Int, val cbCallback: Wyo
         }
     }
 
+    fun sendWakeScore(wakeWord: String, score: Float, threshold: Float) {
+        pipelineClient?.sendWakeScore(wakeWord, score, threshold)
+    }
+
     fun sendStatus(data: JsonObject) {
         if (pipelineClient != null) {
             pipelineClient?.sendStatus(data)
