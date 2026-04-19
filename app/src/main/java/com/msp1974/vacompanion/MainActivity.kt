@@ -904,6 +904,15 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
     private fun checkForUpdate() {
         try {
             Timber.d("Checking for update")
+            // Barnabee fork: we ship outside the upstream GitHub-release update
+            // channel (different applicationId, different signing key, different
+            // repo). The upstream check would always "succeed" with a release
+            // we can't install on top of, so short-circuit here.
+            if (config.version.contains("barnabee", ignoreCase = true)) {
+                log.d("Barnabee build — skipping upstream GitHub update check")
+                updateProcessComplete = true
+                return
+            }
             if (updater.isUpdateAvailable(config.minRequiredApkVersion)) {
                 log.d("Update available - ${updater.latestRelease.downloadURL}")
 

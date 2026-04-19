@@ -172,10 +172,23 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
 
     private fun startSatellite() {
 
-        if (config.version.toVersion() < config.minRequiredApkVersion.toVersion()) {
+        // Barnabee-fork-local builds use a versionName suffixed with "barnabee"
+        // (e.g. "0.10.0-barnabee", "0.10.0-barnabee-dev"). SemVer treats those
+        // as pre-releases of the base version, so a strict `<` comparison
+        // against HA's `min_required_apk_version` (e.g. "0.10.0") spuriously
+        // fails and produces a "needs update" loop at pair-time. Our fork
+        // short-circuits the check — we ship independent of upstream's APK
+        // update channel anyway (Barnabee has its own signing + update path).
+        val isBarnabeeBuild = config.version.contains("barnabee", ignoreCase = true)
+        if (!isBarnabeeBuild &&
+            config.version.toVersion() < config.minRequiredApkVersion.toVersion()) {
             log.d("App update needed. App is ${config.version}, Min required is ${config.minRequiredApkVersion}")
             BroadcastSender.sendBroadcast(context, BroadcastSender.VERSION_MISMATCH)
             return
+        }
+        if (isBarnabeeBuild) {
+            log.d("Barnabee build ${config.version} — skipping upstream min_required_apk_version gate " +
+                    "(HA sent: ${config.minRequiredApkVersion})")
         }
 
         if (config.pairedDeviceID == "") {
