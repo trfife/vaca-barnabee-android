@@ -61,7 +61,8 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
     private val connectionID: String = "${client.inetAddress.hostAddress}"
 
     private var pingTimer: Timer = Timer()
-
+    @Volatile private var missedPongs: Int = 0
+    private val MAX_MISSED_PONGS = 3  // 3 × 2s = 6s with no response → dead
     private var alarmPlayer: Alarm = Alarm(context)
     private var pcmMediaPlayer: PCMMediaPlayer = PCMMediaPlayer(context)
     private var musicPlayer: VAMediaPlayer = VAMediaPlayer.getInstance(context)
@@ -527,6 +528,9 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
         if (event.type != "ping" && event.type != "pong" && event.type != "audio-chunk") {
             log.d("Received event - $client_id: ${event.toMap()}")
         }
+
+        // Any event received proves the connection is alive.
+        missedPongs = 0
 
         // Events not requiring running satellite
         try {
@@ -1031,6 +1035,14 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
     private fun startIntervalPing() {
         pingTimer.schedule(object: TimerTask() {
             override fun run() {
+                // Track missed pongs — if the connection is dead, sendEvent
+                // may succeed (kernel TCP buffer) but no pong comes back.
+                missedPongs++
+                if (missedPongs > MAX_MISSED_PONGS) {
+                    log.w("Connection dead: $missedPongs pings without pong — terminating")
+                    runClient = false
+                    return
+                }
                 sendEvent(
                     "ping",
                     buildJsonObject {
