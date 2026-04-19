@@ -161,9 +161,13 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
             putJsonObject("sensors") {
                 put("satellite_state", satellitePhase.wireValue)
                 put("pipeline_stage", stageName)
-                put("last_wake_at", lastWakeAtMs)
-                put("last_pipeline_success_at", lastPipelineSuccessAtMs)
-                put("last_error_at", lastErrorAtMs)
+                // Emit ISO-8601 UTC for TIMESTAMP device-class compatibility
+                // with the HA-side integration (see vaca-barnabee-integration
+                // _get_timestamp_from_string). Epoch 0 → "1970-01-01..." which
+                // the integration treats as "never" and returns None.
+                put("last_wake_at", isoOrEpochZero(lastWakeAtMs))
+                put("last_pipeline_success_at", isoOrEpochZero(lastPipelineSuccessAtMs))
+                put("last_error_at", isoOrEpochZero(lastErrorAtMs))
             }
         }
         try {
@@ -172,6 +176,9 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
             log.e("emitStatusSnapshot failed: ${ex.message}")
         }
     }
+
+    private fun isoOrEpochZero(ms: Long): String =
+        DateTimeFormatter.ISO_INSTANT.format(Instant.ofEpochMilli(ms))
 
     // Initiate wake word broadcast receiver
     var wakeWordBroadcastReceiver: BroadcastReceiver = object : BroadcastReceiver() {
