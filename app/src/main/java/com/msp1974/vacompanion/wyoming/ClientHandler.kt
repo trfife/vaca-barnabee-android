@@ -320,6 +320,12 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
         log.d("Client $client_id connected from ${client.inetAddress.hostAddress}. Connections: $connections")
         ErrorReporter.register(this)
         startIntervalPing()
+        // Drain any persisted uncaught-exception crash reports from last session.
+        try {
+            CrashReportSender.drainIfAny(context, this)
+        } catch (ex: Exception) {
+            log.w("Crash report drain failed: $ex")
+        }
         while (runClient) {
             try {
                 if (reader.available() > 0) {
@@ -823,6 +829,11 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                         actionAlarm(false)
                     }
                 }
+            }
+
+            "reset-pipeline" -> {
+                log.i("reset-pipeline action received from HA")
+                resetPipeline()
             }
 
             "get-logs" -> {
