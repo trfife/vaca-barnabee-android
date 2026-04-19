@@ -149,6 +149,7 @@ class OpenWakeWordEngine(
                     if (audio.isNotEmpty()) {
 
                         if (config.diagnosticsEnabled) {
+                            com.msp1974.vacompanion.wyoming.MicLevelMonitor.onFrame(audio)
                             emit(AudioResult.AudioLevel(AudioDSP().audioLevel(audio)))
                         }
 

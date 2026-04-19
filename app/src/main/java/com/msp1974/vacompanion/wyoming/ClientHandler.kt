@@ -319,6 +319,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
         val connections = config.atomicConnectionCount.incrementAndGet()
         log.d("Client $client_id connected from ${client.inetAddress.hostAddress}. Connections: $connections")
         ErrorReporter.register(this)
+        MicLevelMonitor.register(this)
         startIntervalPing()
         // Drain any persisted uncaught-exception crash reports from last session.
         try {
@@ -351,6 +352,7 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
     fun stop() {
         log.d("Stopping client $client_id connection handler")
         ErrorReporter.unregister(this)
+        MicLevelMonitor.unregister(this)
         stopIntervalPing()
 
         if (satelliteStatus == SatelliteState.RUNNING) {

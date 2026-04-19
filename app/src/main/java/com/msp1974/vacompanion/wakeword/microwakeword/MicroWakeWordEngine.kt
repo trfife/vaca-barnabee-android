@@ -79,6 +79,14 @@ open class MicroWakeWordEngine (
                     val audio = microphoneInput.readBytes()
 
                     if (config.diagnosticsEnabled) {
+                        val levelBuf: ByteArray = if (audio.hasArray()) {
+                            audio.array()
+                        } else {
+                            val tmp = ByteArray(audio.remaining())
+                            audio.mark(); audio.get(tmp); audio.reset()
+                            tmp
+                        }
+                        com.msp1974.vacompanion.wyoming.MicLevelMonitor.onFrame(levelBuf)
                         val audioByteString = ByteString.copyFrom(audio)
                         audio.rewind()
                         emit(AudioResult.AudioLevel(AudioDSP().audioLevel(audioByteString.toByteArray())))
