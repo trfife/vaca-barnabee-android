@@ -838,6 +838,23 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                 resetPipeline()
             }
 
+            "audio-selftest" -> {
+                log.i("audio-selftest action received from HA")
+                kotlin.concurrent.thread(name = "audio-selftest") {
+                    try {
+                        kotlinx.coroutines.runBlocking { AudioSelfTest.run(this@ClientHandler) }
+                    } catch (ex: Exception) {
+                        emitError(
+                            code = "selftest.audio",
+                            component = "audio",
+                            severity = "warn",
+                            message = "audio-selftest failed",
+                            cause = ex,
+                        )
+                    }
+                }
+            }
+
             "get-logs" -> {
                 try {
                     val tree = com.msp1974.vacompanion.utils.RingLogTree.instance

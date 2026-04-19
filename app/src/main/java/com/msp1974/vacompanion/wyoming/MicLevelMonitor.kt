@@ -28,6 +28,14 @@ object MicLevelMonitor {
     private var sumSquaresWindow: Double = 0.0
     private var sampleCountWindow: Long = 0L
 
+    // Last emitted values — available for selftest snapshots.
+    @Volatile var lastPeakDbfs: Double = -120.0
+        private set
+    @Volatile var lastRmsDbfs: Double = -120.0
+        private set
+    @Volatile var lastEmitEpochMs: Long = 0L
+        private set
+
     fun register(handler: ClientHandler) {
         sink = handler
         reset()
@@ -130,14 +138,18 @@ object MicLevelMonitor {
         val peakDbfs = if (peak > 0) 20.0 * log10(peak.toDouble() / 32768.0) else -120.0
         val rmsDbfs = if (rms > 0) 20.0 * log10(rms / 32768.0) else -120.0
 
+        lastPeakDbfs = (peakDbfs * 10).toInt() / 10.0
+        lastRmsDbfs = (rmsDbfs * 10).toInt() / 10.0
+        lastEmitEpochMs = System.currentTimeMillis()
+
         try {
             target.sendCustomEvent(
                 "mic-level",
                 buildJsonObject {
                     put("peak", peak)
                     put("rms", rms.toInt())
-                    put("peak_dbfs", (peakDbfs * 10).toInt() / 10.0)
-                    put("rms_dbfs", (rmsDbfs * 10).toInt() / 10.0)
+                    put("peak_dbfs", lastPeakDbfs)
+                    put("rms_dbfs", lastRmsDbfs)
                     put("samples", n)
                 },
             )
