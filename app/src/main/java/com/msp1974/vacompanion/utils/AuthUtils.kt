@@ -144,13 +144,15 @@ class AuthUtils(val config: APPConfig) {
             return url
         }
 
-        fun getURL(baseUrl: String): String {
+        fun getURL(baseUrl: String, deviceId: String? = null): String {
             log.d("Getting URL for $baseUrl")
-            val url = baseUrl.toUri()
+            val builder = baseUrl.toUri()
                 .buildUpon()
                 .appendQueryParameter("external_auth", "1")
-                .build()
-            return url.toString()
+            if (deviceId != null) {
+                builder.appendQueryParameter("device", deviceId)
+            }
+            return builder.build().toString()
         }
 
         fun getAuthUrl(baseUrl: String): String {

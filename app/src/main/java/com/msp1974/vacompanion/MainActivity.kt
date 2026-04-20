@@ -352,7 +352,7 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
                     viewModel.setSatelliteRunning(true)
                     webView.setZoomLevel(config.zoomLevel)
                     config.screenOn = screen.isScreenOn()
-                    val url = AuthUtils.getURL(AuthUtils.getHAUrl(config))
+                    val url = AuthUtils.getURL(AuthUtils.getHAUrl(config), config.uuid.replace("-", "_"))
                     log.d("Loading URL: $url")
                     webView.loadUrl(url)
                     resetIdleTimers()
@@ -371,7 +371,7 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
                 }
                 BroadcastSender.WEBVIEW_CRASH -> {
                     initWebView()
-                    val url = AuthUtils.getURL(AuthUtils.getHAUrl(config))
+                    val url = AuthUtils.getURL(AuthUtils.getHAUrl(config), config.uuid.replace("-", "_"))
                     log.d("Loading URL: $url")
                     webView.loadUrl(url)
                 }
@@ -491,7 +491,7 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
             if (config.isRunning) {
                 viewModel.setSatelliteRunning(true)
                 webView.setZoomLevel(config.zoomLevel)
-                val url = AuthUtils.getURL(AuthUtils.getHAUrl(config))
+                val url = AuthUtils.getURL(AuthUtils.getHAUrl(config), config.uuid.replace("-", "_"))
                 log.d("Loading URL: $url")
                 webView.loadUrl(url)
             } else {
