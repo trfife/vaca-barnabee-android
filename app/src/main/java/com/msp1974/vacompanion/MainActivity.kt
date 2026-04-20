@@ -626,7 +626,7 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
 
     private val idleHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var screensaverTimerRunnable: Runnable? = null
-    private val IDLE_TO_SCREENSAVER_MS = 120_000L // 2 minutes
+    private val IDLE_TO_SCREENSAVER_MS get() = config.screensaverTimeoutMin * 60_000L
     @Volatile private var isOnScreensaver = false
 
     fun navigateTo(path: String) {

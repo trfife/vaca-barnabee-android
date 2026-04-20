@@ -239,10 +239,17 @@ class APPConfig(val context: Context) {
         onValueChangedListener(property, oldValue, newValue)
     }
 
+    var screensaverMode: String by Delegates.observable("slideshow") { property, oldValue, newValue ->
+        onValueChangedListener(property, oldValue, newValue)
+    }
 
+    var screensaverTimeoutMin: Int by Delegates.observable(2) { property, oldValue, newValue ->
+        onValueChangedListener(property, oldValue, newValue)
+    }
 
-
-
+    var photoDurationSec: Int by Delegates.observable(60) { property, oldValue, newValue ->
+        onValueChangedListener(property, oldValue, newValue)
+    }
     // SharedPreferences
     var canSetScreenWritePermission: Boolean
         get() = this.sharedPrefs.getBoolean("can_set_screen_write_permission", true)
@@ -396,6 +403,15 @@ class APPConfig(val context: Context) {
         }
         if (settings.has("screen_orientation_mode")) {
             screenOrientationMode = settings.getString("screen_orientation_mode")
+        }
+        if (settings.has("screensaver_mode")) {
+            screensaverMode = settings.getString("screensaver_mode")
+        }
+        if (settings.has("screensaver_timeout")) {
+            screensaverTimeoutMin = settings.getInt("screensaver_timeout")
+        }
+        if (settings.has("photo_duration")) {
+            photoDurationSec = settings.getInt("photo_duration")
         }
 
 
