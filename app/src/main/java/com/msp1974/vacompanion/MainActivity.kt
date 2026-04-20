@@ -577,7 +577,11 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
                     resetIdleTimers(resetScreensaver = false)
                 }
                 "wakeWordTrigger" -> {
-                    navigateHome()
+                    // Only go home if on screensaver — don't reload the
+                    // page mid-pipeline (causes a refresh loop).
+                    if (isOnScreensaver) {
+                        navigateHome()
+                    }
                     resetIdleTimers(resetScreensaver = true)
                 }
                 "showToastMessage" -> Toast.makeText(
