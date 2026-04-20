@@ -562,6 +562,9 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
                 "navigate" -> navigateTo(event.newValue as String)
                 "screenWake" -> {
                     screenWake()
+                    // Navigate home on wake (voice trigger, proximity, etc.)
+                    // Safe now — JS pushState doesn't reload the page.
+                    navigateHome()
                     resetIdleTimers(resetScreensaver = true)
                 }
                 "screenSleep" -> screenSleep()
