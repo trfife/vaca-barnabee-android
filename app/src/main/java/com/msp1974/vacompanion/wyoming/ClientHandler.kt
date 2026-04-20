@@ -919,6 +919,20 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                 config.eventBroadcaster.notifyEvent(Event("refresh", "", ""))
             }
 
+            "navigate" -> {
+                // Navigate the webview to a specific dashboard path.
+                // payload: {"path": "/dashboard-barnabee/controls"}
+                if (event.getProp("payload") != "") {
+                    try {
+                        val values = JSONObject(event.getProp("payload"))
+                        val path = values.getString("path")
+                        config.eventBroadcaster.notifyEvent(Event("navigate", "", path))
+                    } catch (ex: Exception) {
+                        log.e("Error parsing navigate payload: $ex")
+                    }
+                }
+            }
+
             "screen-wake" -> {
                 config.eventBroadcaster.notifyEvent(Event("screenWake", "", ""))
             }

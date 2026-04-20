@@ -355,6 +355,7 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
                     val url = AuthUtils.getURL(AuthUtils.getHAUrl(config))
                     log.d("Loading URL: $url")
                     webView.loadUrl(url)
+                    resetIdleTimers()
                 }
                 BroadcastSender.SATELLITE_STOPPED -> {
                     viewModel.setSatelliteRunning(false)
@@ -558,13 +559,24 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
                 "zoomLevel" -> webView.setZoomLevel(event.newValue as Int)
                 "darkMode" -> setDarkMode(event.newValue as Boolean)
                 "refresh" -> webView.reload()
+                "navigate" -> navigateTo(event.newValue as String)
                 "screenWake" -> screenWake()
                 "screenSleep" -> screenSleep()
                 "screenSaver" -> screenSaver(event.newValue as Boolean)
                 "screenOrientationMode" -> setScreenOrientation(event.newValue as String)
-                "deviceBump" -> if (config.screenOnBump) screenWake()
-                "proximity" -> if (config.screenOnProximity && event.newValue as Float == 0f) screenWake()
-                "motion" -> onMotion()
+                "deviceBump" -> {
+                    if (config.screenOnBump) screenWake()
+                    resetIdleTimers()
+                }
+                "proximity" -> {
+                    if (config.screenOnProximity && event.newValue as Float == 0f) screenWake()
+                    resetIdleTimers()
+                }
+                "motion" -> {
+                    onMotion()
+                    resetIdleTimers()
+                }
+                "wakeWordTrigger" -> resetIdleTimers()
                 "showToastMessage" -> Toast.makeText(
                     this,
                     event.newValue as String,
@@ -581,6 +593,63 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
     fun onMotion() {
         config.lastMotion = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
         if (config.screenOnMotion) screenWake()
+    }
+
+    // ── Dashboard navigation + idle timers ──────────────────────────────
+    //
+    // Two idle thresholds:
+    // • 60s no interaction (bump/proximity/motion/wake) → navigate to /home
+    // • 300s no interaction → navigate to screensaver tab (/photos)
+    //
+    // Any interaction resets both timers.
+
+    private val idleHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var homeTimerRunnable: Runnable? = null
+    private var screensaverTimerRunnable: Runnable? = null
+    private val IDLE_TO_HOME_MS = 60_000L       // 1 minute
+    private val IDLE_TO_SCREENSAVER_MS = 300_000L // 5 minutes
+    @Volatile private var isOnScreensaver = false
+
+    fun navigateTo(path: String) {
+        val baseUrl = AuthUtils.getHAUrl(config, withDashboardPath = false)
+        val fullUrl = AuthUtils.getURL("$baseUrl/${ path.removePrefix("/") }")
+        log.d("Navigating to: $fullUrl")
+        isOnScreensaver = path.contains("photos") || path.contains("screensaver")
+        webView.loadUrl(fullUrl)
+    }
+
+    private fun navigateHome() {
+        val dashboard = config.homeAssistantDashboard.ifEmpty { "dashboard-barnabee" }
+        val homePath = "$dashboard/home"
+        log.d("Idle → navigating to home: $homePath")
+        isOnScreensaver = false
+        navigateTo(homePath)
+    }
+
+    private fun navigateToScreensaver() {
+        val dashboard = config.homeAssistantDashboard.ifEmpty { "dashboard-barnabee" }
+        val screensaverPath = "$dashboard/photos"
+        log.d("Idle → navigating to screensaver: $screensaverPath")
+        navigateTo(screensaverPath)
+    }
+
+    fun resetIdleTimers() {
+        // Cancel existing timers
+        homeTimerRunnable?.let { idleHandler.removeCallbacks(it) }
+        screensaverTimerRunnable?.let { idleHandler.removeCallbacks(it) }
+
+        // If on screensaver, go home immediately on any interaction
+        if (isOnScreensaver) {
+            navigateHome()
+        }
+
+        // Arm 60s → home timer
+        homeTimerRunnable = Runnable { navigateHome() }
+        idleHandler.postDelayed(homeTimerRunnable!!, IDLE_TO_HOME_MS)
+
+        // Arm 5min → screensaver timer
+        screensaverTimerRunnable = Runnable { navigateToScreensaver() }
+        idleHandler.postDelayed(screensaverTimerRunnable!!, IDLE_TO_SCREENSAVER_MS)
     }
 
     fun setScreenOrientation(mode: String) {
