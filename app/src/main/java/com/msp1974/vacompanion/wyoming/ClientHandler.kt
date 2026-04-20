@@ -353,8 +353,6 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                                     setPhase(SatellitePhase.LISTENING, "wake-word")
                                     sendWakeWordDetection()
                                     sendStartPipeline()
-                                    // Navigate to home on wake word
-                                    config.eventBroadcaster.notifyEvent(Event("wakeWordTrigger", "", ""))
                                 }
                             }
                         }

@@ -560,7 +560,10 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
                 "darkMode" -> setDarkMode(event.newValue as Boolean)
                 "refresh" -> webView.reload()
                 "navigate" -> navigateTo(event.newValue as String)
-                "screenWake" -> screenWake()
+                "screenWake" -> {
+                    screenWake()
+                    resetIdleTimers(resetScreensaver = true)
+                }
                 "screenSleep" -> screenSleep()
                 "screenSaver" -> screenSaver(event.newValue as Boolean)
                 "screenOrientationMode" -> setScreenOrientation(event.newValue as String)
