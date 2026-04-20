@@ -634,7 +634,7 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
     }
 
     private fun navigateHome() {
-        val dashboard = config.homeAssistantDashboard.ifEmpty { "dashboard-barnabee" }
+        val dashboard = config.homeAssistantDashboard.ifEmpty { "dashboard-stardeck" }
         val homePath = "$dashboard/home"
         log.d("Idle → navigating to home: /$homePath")
         isOnScreensaver = false
@@ -646,7 +646,7 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
     }
 
     private fun navigateToScreensaver() {
-        val dashboard = config.homeAssistantDashboard.ifEmpty { "dashboard-barnabee" }
+        val dashboard = config.homeAssistantDashboard.ifEmpty { "dashboard-stardeck" }
         val screensaverPath = "$dashboard/photos"
         log.d("Idle → navigating to screensaver: /$screensaverPath")
         isOnScreensaver = true
