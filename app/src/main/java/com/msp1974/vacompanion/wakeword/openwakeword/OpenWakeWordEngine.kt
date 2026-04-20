@@ -209,12 +209,21 @@ class OpenWakeWordEngine(
                             }
                             emit(AudioResult.Audio(ByteString.copyFrom(pcmBytes)))
                         } else {
-                            wasStreaming = false
-                            // Buffer audio for pre-wake replay.
-                            if (preWakeBuffer.size >= PRE_WAKE_BUFFER_FRAMES) {
-                                preWakeBuffer.removeFirst()
+                            // Clear buffer on the transition out of streaming so
+                            // the next turn doesn't replay stale audio.
+                            if (wasStreaming) {
+                                wasStreaming = false
+                                preWakeBuffer.clear()
                             }
-                            preWakeBuffer.addLast(pcmBytes.copyOf())
+                            // Don't buffer while TTS is playing — the mic is
+                            // picking up the device's own speaker output, which
+                            // would be transcribed as a self-loop on the next turn.
+                            if (!com.msp1974.vacompanion.audio.TTSPlaybackGate.isSpeaking()) {
+                                if (preWakeBuffer.size >= PRE_WAKE_BUFFER_FRAMES) {
+                                    preWakeBuffer.removeFirst()
+                                }
+                                preWakeBuffer.addLast(pcmBytes.copyOf())
+                            }
                         }
 
                         val detections = processAudio(audio)
