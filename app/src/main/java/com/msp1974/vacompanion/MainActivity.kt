@@ -467,6 +467,14 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
         setScreenSettings()
     }
 
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent?): Boolean {
+        if (ev?.action == android.view.MotionEvent.ACTION_DOWN && isOnScreensaver) {
+            navigateHome()
+            resetIdleTimers(resetScreensaver = true)
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
     override fun onDestroy() {
         log.d("Main Activity destroyed")
         screen.setScreenTimeout(config.screenTimeout)
