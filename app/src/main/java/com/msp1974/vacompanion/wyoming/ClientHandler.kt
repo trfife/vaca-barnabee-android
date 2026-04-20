@@ -943,6 +943,12 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
             "wake" -> {
                 config.eventBroadcaster.notifyEvent(Event("wakeWordTrigger", "", ""))
             }
+            "stand-down" -> {
+                // Multi-device arbitration: another device won the wake.
+                // Cancel any in-progress pipeline and return to idle.
+                log.i("Stand-down received — another device won wake arbitration")
+                resetPipeline()
+            }
             "alarm" -> {
                 if (event.getProp("payload") != "") {
                     val values = JSONObject(event.getProp("payload"))
@@ -1190,6 +1196,8 @@ class ClientHandler(private val context: Context, private val server: WyomingTCP
                     put("wake_word", wakeWord)
                     put("score", (score * 1000).toInt() / 1000.0)
                     put("threshold", (threshold * 1000).toInt() / 1000.0)
+                    put("mic_peak_dbfs", MicLevelMonitor.lastPeakDbfs)
+                    put("mic_rms_dbfs", MicLevelMonitor.lastRmsDbfs)
                     put("ts", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
                 },
             )
