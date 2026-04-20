@@ -623,17 +623,25 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
         val homePath = "$dashboard/home"
         log.d("Idle → navigating to home: $homePath")
         isOnScreensaver = false
-        navigateTo(homePath)
+        val baseUrl = AuthUtils.getHAUrl(config, withDashboardPath = false)
+        val fullUrl = AuthUtils.getURL("$baseUrl/${ homePath.removePrefix("/") }")
+        webView.loadUrl(fullUrl)
+        // Don't call navigateTo() here — it would mark isOnScreensaver
+        // based on path. The screensaver timer stays armed.
     }
 
     private fun navigateToScreensaver() {
         val dashboard = config.homeAssistantDashboard.ifEmpty { "dashboard-barnabee" }
         val screensaverPath = "$dashboard/photos"
         log.d("Idle → navigating to screensaver: $screensaverPath")
-        navigateTo(screensaverPath)
+        isOnScreensaver = true
+        val baseUrl = AuthUtils.getHAUrl(config, withDashboardPath = false)
+        val fullUrl = AuthUtils.getURL("$baseUrl/${ screensaverPath.removePrefix("/") }")
+        webView.loadUrl(fullUrl)
     }
 
     fun resetIdleTimers() {
+        log.d("resetIdleTimers called (onScreensaver=$isOnScreensaver)")
         // Cancel existing timers
         homeTimerRunnable?.let { idleHandler.removeCallbacks(it) }
         screensaverTimerRunnable?.let { idleHandler.removeCallbacks(it) }
@@ -643,11 +651,11 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
             navigateHome()
         }
 
-        // Arm 60s → home timer
+        // Arm home timer (go to /home after idle)
         homeTimerRunnable = Runnable { navigateHome() }
         idleHandler.postDelayed(homeTimerRunnable!!, IDLE_TO_HOME_MS)
 
-        // Arm 5min → screensaver timer
+        // Arm screensaver timer (go to /photos after longer idle)
         screensaverTimerRunnable = Runnable { navigateToScreensaver() }
         idleHandler.postDelayed(screensaverTimerRunnable!!, IDLE_TO_SCREENSAVER_MS)
     }
