@@ -566,17 +566,17 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
                 "screenOrientationMode" -> setScreenOrientation(event.newValue as String)
                 "deviceBump" -> {
                     if (config.screenOnBump) screenWake()
-                    resetIdleTimers()
+                    resetIdleTimers(resetScreensaver = true)
                 }
                 "proximity" -> {
                     if (config.screenOnProximity && event.newValue as Float == 0f) screenWake()
-                    resetIdleTimers()
+                    resetIdleTimers(resetScreensaver = true)
                 }
                 "motion" -> {
                     onMotion()
-                    resetIdleTimers()
+                    resetIdleTimers(resetScreensaver = false)
                 }
-                "wakeWordTrigger" -> resetIdleTimers()
+                "wakeWordTrigger" -> resetIdleTimers(resetScreensaver = true)
                 "showToastMessage" -> Toast.makeText(
                     this,
                     event.newValue as String,
@@ -641,13 +641,16 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
     }
 
     fun resetIdleTimers() {
-        log.d("resetIdleTimers called (onScreensaver=$isOnScreensaver)")
-        // Cancel existing timers
+        resetIdleTimers(resetScreensaver = true)
+    }
+
+    fun resetIdleTimers(resetScreensaver: Boolean) {
+        log.d("resetIdleTimers called (onScreensaver=$isOnScreensaver, resetScreensaver=$resetScreensaver)")
+        // Cancel home timer (always)
         homeTimerRunnable?.let { idleHandler.removeCallbacks(it) }
-        screensaverTimerRunnable?.let { idleHandler.removeCallbacks(it) }
 
         // If on screensaver, go home immediately on any interaction
-        if (isOnScreensaver) {
+        if (isOnScreensaver && resetScreensaver) {
             navigateHome()
         }
 
@@ -655,9 +658,14 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
         homeTimerRunnable = Runnable { navigateHome() }
         idleHandler.postDelayed(homeTimerRunnable!!, IDLE_TO_HOME_MS)
 
-        // Arm screensaver timer (go to /photos after longer idle)
-        screensaverTimerRunnable = Runnable { navigateToScreensaver() }
-        idleHandler.postDelayed(screensaverTimerRunnable!!, IDLE_TO_SCREENSAVER_MS)
+        // Only reset screensaver timer on deliberate interactions
+        // (bump, proximity, wake word) — NOT on motion alone, since
+        // the device detects its own screen refreshes as motion.
+        if (resetScreensaver) {
+            screensaverTimerRunnable?.let { idleHandler.removeCallbacks(it) }
+            screensaverTimerRunnable = Runnable { navigateToScreensaver() }
+            idleHandler.postDelayed(screensaverTimerRunnable!!, IDLE_TO_SCREENSAVER_MS)
+        }
     }
 
     fun setScreenOrientation(mode: String) {
