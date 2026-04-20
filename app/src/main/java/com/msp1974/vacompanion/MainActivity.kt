@@ -621,33 +621,39 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
     @Volatile private var isOnScreensaver = false
 
     fun navigateTo(path: String) {
-        val baseUrl = AuthUtils.getHAUrl(config, withDashboardPath = false)
-        val fullUrl = AuthUtils.getURL("$baseUrl/${ path.removePrefix("/") }")
-        log.d("Navigating to: $fullUrl")
-        isOnScreensaver = path.contains("photos") || path.contains("screensaver")
-        webView.loadUrl(fullUrl)
+        val cleanPath = path.removePrefix("/")
+        log.d("Navigating to: /$cleanPath (JS pushState)")
+        isOnScreensaver = cleanPath.contains("photos") || cleanPath.contains("screensaver")
+        // Use JS history navigation — no full page reload
+        webView.evaluateJavascript(
+            "window.history.pushState({}, '', '/$cleanPath'); " +
+            "window.dispatchEvent(new PopStateEvent('popstate'));",
+            null
+        )
     }
 
     private fun navigateHome() {
         val dashboard = config.homeAssistantDashboard.ifEmpty { "dashboard-barnabee" }
         val homePath = "$dashboard/home"
-        log.d("Idle → navigating to home: $homePath")
+        log.d("Idle → navigating to home: /$homePath")
         isOnScreensaver = false
-        val baseUrl = AuthUtils.getHAUrl(config, withDashboardPath = false)
-        val fullUrl = AuthUtils.getURL("$baseUrl/${ homePath.removePrefix("/") }")
-        webView.loadUrl(fullUrl)
-        // Don't call navigateTo() here — it would mark isOnScreensaver
-        // based on path. The screensaver timer stays armed.
+        webView.evaluateJavascript(
+            "window.history.pushState({}, '', '/$homePath'); " +
+            "window.dispatchEvent(new PopStateEvent('popstate'));",
+            null
+        )
     }
 
     private fun navigateToScreensaver() {
         val dashboard = config.homeAssistantDashboard.ifEmpty { "dashboard-barnabee" }
         val screensaverPath = "$dashboard/photos"
-        log.d("Idle → navigating to screensaver: $screensaverPath")
+        log.d("Idle → navigating to screensaver: /$screensaverPath")
         isOnScreensaver = true
-        val baseUrl = AuthUtils.getHAUrl(config, withDashboardPath = false)
-        val fullUrl = AuthUtils.getURL("$baseUrl/${ screensaverPath.removePrefix("/") }")
-        webView.loadUrl(fullUrl)
+        webView.evaluateJavascript(
+            "window.history.pushState({}, '', '/$screensaverPath'); " +
+            "window.dispatchEvent(new PopStateEvent('popstate'));",
+            null
+        )
     }
 
     fun resetIdleTimers() {
