@@ -576,7 +576,10 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
                     onMotion()
                     resetIdleTimers(resetScreensaver = false)
                 }
-                "wakeWordTrigger" -> resetIdleTimers(resetScreensaver = true)
+                "wakeWordTrigger" -> {
+                    navigateHome()
+                    resetIdleTimers(resetScreensaver = true)
+                }
                 "showToastMessage" -> Toast.makeText(
                     this,
                     event.newValue as String,
