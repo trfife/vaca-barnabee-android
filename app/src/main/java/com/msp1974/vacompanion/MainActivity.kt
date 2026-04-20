@@ -617,10 +617,8 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
     // Any interaction resets both timers.
 
     private val idleHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var homeTimerRunnable: Runnable? = null
     private var screensaverTimerRunnable: Runnable? = null
-    private val IDLE_TO_HOME_MS = 60_000L       // 1 minute
-    private val IDLE_TO_SCREENSAVER_MS = 300_000L // 5 minutes
+    private val IDLE_TO_SCREENSAVER_MS = 120_000L // 2 minutes
     @Volatile private var isOnScreensaver = false
 
     fun navigateTo(path: String) {
@@ -664,27 +662,19 @@ class MainActivity : AppCompatActivity(), EventListener, ComponentCallbacks2 {
     }
 
     fun resetIdleTimers(resetScreensaver: Boolean) {
-        log.d("resetIdleTimers called (onScreensaver=$isOnScreensaver, resetScreensaver=$resetScreensaver)")
-        // Cancel home timer (always)
-        homeTimerRunnable?.let { idleHandler.removeCallbacks(it) }
+        if (!resetScreensaver) return  // motion-only — ignore
 
-        // If on screensaver, go home immediately on any interaction
-        if (isOnScreensaver && resetScreensaver) {
+        log.d("resetIdleTimers called (onScreensaver=$isOnScreensaver)")
+
+        // If on screensaver, go home immediately
+        if (isOnScreensaver) {
             navigateHome()
         }
 
-        // Arm home timer (go to /home after idle)
-        homeTimerRunnable = Runnable { navigateHome() }
-        idleHandler.postDelayed(homeTimerRunnable!!, IDLE_TO_HOME_MS)
-
-        // Only reset screensaver timer on deliberate interactions
-        // (bump, proximity, wake word) — NOT on motion alone, since
-        // the device detects its own screen refreshes as motion.
-        if (resetScreensaver) {
-            screensaverTimerRunnable?.let { idleHandler.removeCallbacks(it) }
-            screensaverTimerRunnable = Runnable { navigateToScreensaver() }
-            idleHandler.postDelayed(screensaverTimerRunnable!!, IDLE_TO_SCREENSAVER_MS)
-        }
+        // Re-arm screensaver timer (2 min)
+        screensaverTimerRunnable?.let { idleHandler.removeCallbacks(it) }
+        screensaverTimerRunnable = Runnable { navigateToScreensaver() }
+        idleHandler.postDelayed(screensaverTimerRunnable!!, IDLE_TO_SCREENSAVER_MS)
     }
 
     fun setScreenOrientation(mode: String) {
